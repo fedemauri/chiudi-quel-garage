@@ -19,11 +19,20 @@ logger = logging.getLogger(__name__)
 class GeminiParseError(ValueError):
     """Raised when Gemini response cannot be parsed."""
 
-PROMPT = """Analizza questa immagine di un garage con porta sezionale.
-Determina se la porta del garage è APERTA o CHIUSA.
+PROMPT = """Immagine IR (bianco e nero) da telecamera DENTRO un garage.
+La porta sezionale è al centro dell'immagine.
+Determina se la porta è APERTA o CHIUSA.
 
-OPEN: porta sollevata (parzialmente o totalmente), interno visibile.
-CLOSED: porta completamente abbassata, superficie continua, interno non visibile.
+La domanda chiave è: si vede l'ESTERNO (buio, strada, rampa) attraverso il varco?
+
+OPEN: il varco è libero, si vede l'esterno scuro attraverso l'apertura,
+      i pannelli della porta sono retratti lungo il soffitto.
+CLOSED: la porta (pannelli chiari orizzontali) copre e sigilla completamente
+        il varco, l'esterno NON è visibile, nessuna apertura.
+
+ATTENZIONE: quando la porta è chiusa ha linee orizzontali tra i pannelli
+e un binario curvo in alto. NON confondere questi con la porta aperta.
+La differenza è: si vede il BUIO dell'esterno attraverso il varco? Se no = CLOSED.
 
 Rispondi in JSON: {"status": "open"|"closed", "confidence": 0.0-1.0, "reasoning": "..."}
 Il campo reasoning deve essere in italiano, massimo 10 parole.

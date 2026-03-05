@@ -4,6 +4,7 @@ Uses the blinkpy library to connect to Blink cameras without interactive 2FA,
 leveraging credentials previously saved to Firestore during initial setup.
 """
 
+import asyncio
 import logging
 
 from aiohttp import ClientSession
@@ -92,6 +93,7 @@ class BlinkClient:
 
         logger.info("Requesting snapshot from camera '%s'...", camera_name)
         await camera.snap_picture()
+        await asyncio.sleep(3)
         await self._blink.refresh(force=True)
 
         image_bytes: bytes = camera.image_from_cache
