@@ -13,3 +13,6 @@ README.md
 pyproject.toml
 .venv/
 .pytest_cache/
+.idea/
+.vscode/
+deploy.sh

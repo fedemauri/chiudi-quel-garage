@@ -15,6 +15,10 @@ from garage_monitor.models import GarageStatus, GeminiAnalysisResult
 
 logger = logging.getLogger(__name__)
 
+
+class GeminiParseError(ValueError):
+    """Raised when Gemini response cannot be parsed."""
+
 PROMPT = """Analyze this image of a garage with a sectional door.
 Determine if the garage door is OPEN or CLOSED.
 
@@ -69,13 +73,21 @@ class GeminiAnalyzer:
             ),
         )
 
-        data = json.loads(response.text)
+        try:
+            data = json.loads(response.text)
+            result = GeminiAnalysisResult(
+                status=GarageStatus(data["status"]),
+                confidence=float(data["confidence"]),
+                reasoning=data.get("reasoning", ""),
+            )
+        except (json.JSONDecodeError, KeyError, ValueError) as e:
+            raise GeminiParseError(
+                f"Gemini ha risposto in modo inatteso: {e}"
+            ) from e
 
-        result = GeminiAnalysisResult(
-            status=GarageStatus(data["status"]),
-            confidence=float(data["confidence"]),
-            reasoning=data.get("reasoning", ""),
-        )
+        usage = getattr(response, "usage_metadata", None)
+        result.input_tokens = getattr(usage, "prompt_token_count", 0) or 0
+        result.output_tokens = getattr(usage, "candidates_token_count", 0) or 0
 
         logger.info(
             "Garage door classified as %s (confidence=%.2f)",

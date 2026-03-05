@@ -67,6 +67,20 @@ gcloud scheduler jobs create http "$SCHEDULER_JOB" \
     --oidc-service-account-email="$SA_EMAIL" \
     --oidc-token-audience="$FUNCTION_URL"
 
+REPORT_JOB="garage-report-trigger"
+echo ""
+echo ">>> Creo/aggiorno Cloud Scheduler job report (9:00 e 21:00)..."
+gcloud scheduler jobs delete "$REPORT_JOB" --location="$REGION" --quiet 2>/dev/null || true
+
+gcloud scheduler jobs create http "$REPORT_JOB" \
+    --location="$REGION" \
+    --schedule="0 9,21 * * *" \
+    --time-zone="Europe/Rome" \
+    --uri="${FUNCTION_URL}?action=report" \
+    --http-method=POST \
+    --oidc-service-account-email="$SA_EMAIL" \
+    --oidc-token-audience="$FUNCTION_URL"
+
 echo ""
 echo ">>> Test invocazione manuale..."
 gcloud functions call "$FUNCTION_NAME" --gen2 --region="$REGION" || echo "Test fallito, controlla i log."

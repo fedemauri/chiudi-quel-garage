@@ -1,6 +1,7 @@
 from google.cloud.firestore_v1 import Client as FirestoreClient
+from google.cloud.firestore_v1.transforms import Increment
 from datetime import datetime, timezone
-from garage_monitor.models import GarageState, GarageStatus
+from garage_monitor.models import GarageState, GarageStatus, UsageStats
 
 
 class FirestoreStore:
@@ -22,6 +23,7 @@ class FirestoreStore:
             last_check_time=data.get("last_check_time"),
             last_change_time=data.get("last_change_time"),
             consecutive_errors=data.get("consecutive_errors", 0),
+            last_reminder_time=data.get("last_reminder_time"),
         )
 
     def save_state(self, state: GarageState) -> None:
@@ -31,6 +33,7 @@ class FirestoreStore:
             "last_check_time": state.last_check_time,
             "last_change_time": state.last_change_time,
             "consecutive_errors": state.consecutive_errors,
+            "last_reminder_time": state.last_reminder_time,
         })
 
     def get_blink_credentials(self) -> dict | None:
@@ -44,3 +47,26 @@ class FirestoreStore:
         """Salva credenziali Blink con timestamp."""
         credentials["updated_at"] = datetime.now(timezone.utc)
         self._doc("blink_credentials").set(credentials)
+
+    def get_usage_stats(self, period: str) -> UsageStats:
+        """Legge statistiche di utilizzo per il periodo (es. '2026_03')."""
+        snap = self._doc(f"usage_stats_{period}").get()
+        if not snap.exists:
+            return UsageStats(period=period)
+        data = snap.to_dict()
+        return UsageStats(
+            period=period,
+            function_invocations=data.get("function_invocations", 0),
+            gemini_calls=data.get("gemini_calls", 0),
+            gemini_input_tokens=data.get("gemini_input_tokens", 0),
+            gemini_output_tokens=data.get("gemini_output_tokens", 0),
+            firestore_reads=data.get("firestore_reads", 0),
+            firestore_writes=data.get("firestore_writes", 0),
+        )
+
+    def increment_usage(self, period: str, **counters: int) -> None:
+        """Incrementa atomicamente i contatori di utilizzo."""
+        doc_ref = self._doc(f"usage_stats_{period}")
+        updates = {"period": period}
+        updates.update({k: Increment(v) for k, v in counters.items() if v})
+        doc_ref.set(updates, merge=True)
