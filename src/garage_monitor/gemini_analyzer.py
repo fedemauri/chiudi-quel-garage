@@ -19,24 +19,30 @@ logger = logging.getLogger(__name__)
 class GeminiParseError(ValueError):
     """Raised when Gemini response cannot be parsed."""
 
-PROMPT = """Immagine IR (bianco e nero) da telecamera DENTRO un garage.
-La porta sezionale è al centro dell'immagine.
-Determina se la porta è APERTA o CHIUSA.
+PROMPT = """Telecamera fissa DENTRO un garage. L'immagine può essere a colori (giorno)
+o IR bianco/nero (notte). La porta sezionale è al centro. Determina: APERTA o CHIUSA.
 
-La domanda chiave è: si vede l'ESTERNO (buio, strada, rampa) attraverso il varco?
+CLOSED — i pannelli coprono il varco:
+  - Pannelli orizzontali chiari formano una superficie VERTICALE continua
+  - Giunture/linee scure tra i pannelli (è normale, NON è un'apertura)
+  - Binario curvo visibile in alto ai lati
+  - Il varco è completamente sigillato, non si vede nulla oltre la porta
 
-OPEN: il varco è libero, si vede l'esterno scuro attraverso l'apertura,
-      i pannelli della porta sono retratti lungo il soffitto.
-CLOSED: la porta (pannelli chiari orizzontali) copre e sigilla completamente
-        il varco, l'esterno NON è visibile, nessuna apertura.
+OPEN — il varco è libero, la porta è retratta:
+  - I pannelli NON sono una superficie verticale: sono ripiegati/retratti
+    lungo il soffitto (visibili come struttura orizzontale in alto)
+  - Il varco mostra un'apertura ampia: si vede rampa, esterno, pergola, cielo
+  - Anche parzialmente aperta (pannelli a metà, varco parziale in basso) = OPEN
 
-ATTENZIONE: quando la porta è chiusa ha linee orizzontali tra i pannelli
-e un binario curvo in alto. NON confondere questi con la porta aperta.
-La differenza è: si vede il BUIO dell'esterno attraverso il varco? Se no = CLOSED.
+COME DISTINGUERE (la regola fondamentale):
+  Guarda il VARCO della porta (la zona rettangolare al centro dell'immagine).
+  → Se è coperto da pannelli piatti verticali con linee orizzontali → CLOSED
+  → Se mostra un'apertura (totale o parziale) verso l'esterno → OPEN
+  Nel dubbio → CLOSED.
 
-Rispondi in JSON: {"status": "open"|"closed", "confidence": 0.0-1.0, "reasoning": "..."}
+Rispondi SOLO in JSON: {"status": "open"|"closed", "confidence": 0.0-1.0, "reasoning": "..."}
 Il campo reasoning deve essere in italiano, massimo 10 parole.
-Se l'immagine è troppo scura o sfocata, imposta confidence sotto 0.5."""
+Se l'immagine è troppo ambigua, imposta confidence sotto 0.5."""
 
 
 class GeminiAnalyzer:
