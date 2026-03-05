@@ -94,7 +94,7 @@ async def _check_garage_async(settings: Settings) -> str:
             and state.last_change_time is not None
         ):
             minutes_open = (now - state.last_change_time).total_seconds() / 60
-            if minutes_open <= MAX_REMINDER_MINUTES:
+            if REMINDER_INTERVAL_MINUTES <= minutes_open <= MAX_REMINDER_MINUTES:
                 should_remind = (
                     state.last_reminder_time is None
                     or (now - state.last_reminder_time).total_seconds() / 60

@@ -19,6 +19,8 @@ class TelegramNotifier:
         self._chat_id = chat_id
         self._base_url = TELEGRAM_API.format(token=bot_token)
 
+    _STATUS_IT = {"open": "aperto", "closed": "chiuso", "unknown": "sconosciuto"}
+
     def send_status_change(
         self,
         old_status: str,
@@ -28,12 +30,13 @@ class TelegramNotifier:
         photo_bytes: bytes | None = None,
     ) -> None:
         """Send notification when garage status changes, optionally with photo."""
+        old_it = self._STATUS_IT.get(old_status, old_status)
         status_emoji = "🔴 APERTO" if new_status == "open" else "🟢 CHIUSO"
         text = (
             f"🏠 *Garage Monitor*\n\n"
-            f"Stato cambiato: {old_status} → *{status_emoji}*\n"
+            f"Stato cambiato: {old_it} → *{status_emoji}*\n"
             f"Confidenza: {confidence:.0%}\n"
-            f"Motivo: {reasoning}"
+            f"{reasoning}"
         )
 
         if photo_bytes:

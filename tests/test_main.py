@@ -226,10 +226,10 @@ class TestStillOpenReminder:
     @patch("garage_monitor.main.GeminiAnalyzer")
     @patch("garage_monitor.main.TelegramNotifier")
     @patch("garage_monitor.main.FirestoreStore")
-    def test_still_open_no_reminder_too_soon(
+    def test_still_open_no_reminder_too_soon_since_last(
         self, mock_store_cls, mock_tg_cls, mock_gem_cls, mock_blink_cls
     ):
-        """Garage aperto da 10 min -> nessun reminder (< 15 min da ultimo reminder)."""
+        """Garage aperto da 20 min, ultimo reminder 10 min fa -> nessun reminder."""
         now = datetime.now(timezone.utc)
         _, notifier, _, _ = _setup_mocks(
             mock_store_cls, mock_tg_cls, mock_gem_cls, mock_blink_cls,
@@ -238,6 +238,33 @@ class TestStillOpenReminder:
                 last_check_time=now - timedelta(minutes=5),
                 last_change_time=now - timedelta(minutes=20),
                 last_reminder_time=now - timedelta(minutes=10),
+            ),
+            analysis_status=GarageStatus.OPEN,
+            analysis_confidence=0.9,
+            analysis_reasoning="Door open",
+        )
+
+        result = asyncio.run(_check_garage_async(_make_settings()))
+
+        assert result == "OK"
+        notifier.send_still_open_reminder.assert_not_called()
+
+    @patch("garage_monitor.main.BlinkClient")
+    @patch("garage_monitor.main.GeminiAnalyzer")
+    @patch("garage_monitor.main.TelegramNotifier")
+    @patch("garage_monitor.main.FirestoreStore")
+    def test_still_open_no_reminder_before_interval(
+        self, mock_store_cls, mock_tg_cls, mock_gem_cls, mock_blink_cls
+    ):
+        """Garage aperto da 5 min -> nessun reminder (< 15 min dall'apertura)."""
+        now = datetime.now(timezone.utc)
+        _, notifier, _, _ = _setup_mocks(
+            mock_store_cls, mock_tg_cls, mock_gem_cls, mock_blink_cls,
+            state=GarageState(
+                current_status=GarageStatus.OPEN,
+                last_check_time=now - timedelta(minutes=5),
+                last_change_time=now - timedelta(minutes=5),
+                last_reminder_time=None,
             ),
             analysis_status=GarageStatus.OPEN,
             analysis_confidence=0.9,

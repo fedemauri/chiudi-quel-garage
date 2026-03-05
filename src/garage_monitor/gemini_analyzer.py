@@ -19,16 +19,15 @@ logger = logging.getLogger(__name__)
 class GeminiParseError(ValueError):
     """Raised when Gemini response cannot be parsed."""
 
-PROMPT = """Analyze this image of a garage with a sectional door.
-Determine if the garage door is OPEN or CLOSED.
+PROMPT = """Analizza questa immagine di un garage con porta sezionale.
+Determina se la porta del garage è APERTA o CHIUSA.
 
-OPEN: door is raised (partially or fully), interior visible,
-      gap visible between door bottom and floor.
-CLOSED: door is fully lowered, flush with frame,
-        continuous surface, no interior visible.
+OPEN: porta sollevata (parzialmente o totalmente), interno visibile.
+CLOSED: porta completamente abbassata, superficie continua, interno non visibile.
 
-Respond as JSON: {"status": "open"|"closed", "confidence": 0.0-1.0, "reasoning": "..."}
-If image is too dark/blurry, set confidence below 0.5."""
+Rispondi in JSON: {"status": "open"|"closed", "confidence": 0.0-1.0, "reasoning": "..."}
+Il campo reasoning deve essere in italiano, massimo 10 parole.
+Se l'immagine è troppo scura o sfocata, imposta confidence sotto 0.5."""
 
 
 class GeminiAnalyzer:
