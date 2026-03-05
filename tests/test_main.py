@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -190,6 +191,81 @@ class TestCheckGarage:
 
         assert result == "ERROR"
         notifier.send_error_alert.assert_called_once()
+
+
+class TestImageHashSkip:
+    @patch("garage_monitor.main.BlinkClient")
+    @patch("garage_monitor.main.GeminiAnalyzer")
+    @patch("garage_monitor.main.TelegramNotifier")
+    @patch("garage_monitor.main.FirestoreStore")
+    def test_same_image_skips_gemini(
+        self, mock_store_cls, mock_tg_cls, mock_gem_cls, mock_blink_cls
+    ):
+        """Immagine identica alla precedente -> Gemini non viene chiamato."""
+        snapshot_data = b"jpeg-data"
+        image_hash = hashlib.md5(snapshot_data).hexdigest()
+        now = datetime.now(timezone.utc)
+        store, notifier, analyzer, _ = _setup_mocks(
+            mock_store_cls, mock_tg_cls, mock_gem_cls, mock_blink_cls,
+            state=GarageState(
+                current_status=GarageStatus.CLOSED,
+                last_check_time=now,
+                last_change_time=now,
+                last_image_hash=image_hash,
+            ),
+        )
+
+        result = asyncio.run(_check_garage_async(_make_settings()))
+
+        assert result == "OK"
+        analyzer.analyze.assert_not_called()
+        store.save_state.assert_called_once()
+        # function_invocations tracked, but no gemini_calls
+        call_kwargs = store.increment_usage.call_args[1]
+        assert call_kwargs["function_invocations"] == 1
+        assert "gemini_calls" not in call_kwargs
+
+    @patch("garage_monitor.main.BlinkClient")
+    @patch("garage_monitor.main.GeminiAnalyzer")
+    @patch("garage_monitor.main.TelegramNotifier")
+    @patch("garage_monitor.main.FirestoreStore")
+    def test_different_image_calls_gemini(
+        self, mock_store_cls, mock_tg_cls, mock_gem_cls, mock_blink_cls
+    ):
+        """Immagine diversa dalla precedente -> Gemini viene chiamato."""
+        now = datetime.now(timezone.utc)
+        store, notifier, analyzer, _ = _setup_mocks(
+            mock_store_cls, mock_tg_cls, mock_gem_cls, mock_blink_cls,
+            state=GarageState(
+                current_status=GarageStatus.CLOSED,
+                last_check_time=now,
+                last_change_time=now,
+                last_image_hash="different-hash",
+            ),
+        )
+
+        result = asyncio.run(_check_garage_async(_make_settings()))
+
+        assert result == "OK"
+        analyzer.analyze.assert_called_once()
+
+    @patch("garage_monitor.main.BlinkClient")
+    @patch("garage_monitor.main.GeminiAnalyzer")
+    @patch("garage_monitor.main.TelegramNotifier")
+    @patch("garage_monitor.main.FirestoreStore")
+    def test_first_run_never_skips(
+        self, mock_store_cls, mock_tg_cls, mock_gem_cls, mock_blink_cls
+    ):
+        """First run -> Gemini viene sempre chiamato anche se hash presente."""
+        store, notifier, analyzer, _ = _setup_mocks(
+            mock_store_cls, mock_tg_cls, mock_gem_cls, mock_blink_cls,
+            state=None,
+        )
+
+        result = asyncio.run(_check_garage_async(_make_settings()))
+
+        assert result == "OK"
+        analyzer.analyze.assert_called_once()
 
 
 class TestStillOpenReminder:

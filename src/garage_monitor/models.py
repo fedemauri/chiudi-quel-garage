@@ -25,6 +25,7 @@ class GarageState:
     last_change_time: datetime | None = None
     consecutive_errors: int = 0
     last_reminder_time: datetime | None = None
+    last_image_hash: str | None = None
 
 
 @dataclass

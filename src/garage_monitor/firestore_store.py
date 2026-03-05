@@ -24,6 +24,7 @@ class FirestoreStore:
             last_change_time=data.get("last_change_time"),
             consecutive_errors=data.get("consecutive_errors", 0),
             last_reminder_time=data.get("last_reminder_time"),
+            last_image_hash=data.get("last_image_hash"),
         )
 
     def save_state(self, state: GarageState) -> None:
@@ -34,6 +35,7 @@ class FirestoreStore:
             "last_change_time": state.last_change_time,
             "consecutive_errors": state.consecutive_errors,
             "last_reminder_time": state.last_reminder_time,
+            "last_image_hash": state.last_image_hash,
         })
 
     def get_blink_credentials(self) -> dict | None:

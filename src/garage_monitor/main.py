@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import logging
 from datetime import datetime, timezone
 
@@ -44,47 +45,61 @@ async def _check_garage_async(settings: Settings) -> str:
         snapshot = await blink.take_snapshot(settings.blink_camera_name)
         updated_creds = blink.get_updated_credentials()
 
-        result = analyzer.analyze(snapshot)
-        logger.info(
-            "Analysis: status=%s confidence=%.2f reasoning=%s",
-            result.status.value,
-            result.confidence,
-            result.reasoning,
+        # Skip Gemini se immagine identica (byte per byte)
+        current_hash = hashlib.md5(snapshot).hexdigest()
+        skip_gemini = (
+            not first_run
+            and state.last_image_hash is not None
+            and current_hash == state.last_image_hash
         )
 
         state.last_check_time = now
-        state.consecutive_errors = 0
-
+        gemini_called = False
         status_just_changed = False
 
-        if first_run:
-            state.current_status = result.status
-            state.last_change_time = now
-            notifier.send_monitor_started()
-            logger.info("First run. Initial status: %s", result.status.value)
-        elif (
-            result.confidence >= settings.confidence_threshold
-            and result.status != state.current_status
-        ):
-            old = state.current_status
-            state.current_status = result.status
-            state.last_change_time = now
-            state.last_reminder_time = None
-            notifier.send_status_change(
-                old_status=old.value,
-                new_status=result.status.value,
-                confidence=result.confidence,
-                reasoning=result.reasoning,
-                photo_bytes=snapshot,
-            )
-            logger.info("Status changed: %s -> %s", old.value, result.status.value)
-            status_just_changed = True
-        elif result.confidence < settings.confidence_threshold:
-            logger.warning(
-                "Low confidence (%.2f < %.2f). Status unchanged.",
+        if skip_gemini:
+            logger.info("Immagine identica (hash=%s), skip Gemini", current_hash)
+            state.consecutive_errors = 0
+        else:
+            result = analyzer.analyze(snapshot)
+            gemini_called = True
+            state.consecutive_errors = 0
+            state.last_image_hash = current_hash
+            logger.info(
+                "Analysis: status=%s confidence=%.2f reasoning=%s",
+                result.status.value,
                 result.confidence,
-                settings.confidence_threshold,
+                result.reasoning,
             )
+
+            if first_run:
+                state.current_status = result.status
+                state.last_change_time = now
+                notifier.send_monitor_started()
+                logger.info("First run. Initial status: %s", result.status.value)
+            elif (
+                result.confidence >= settings.confidence_threshold
+                and result.status != state.current_status
+            ):
+                old = state.current_status
+                state.current_status = result.status
+                state.last_change_time = now
+                state.last_reminder_time = None
+                notifier.send_status_change(
+                    old_status=old.value,
+                    new_status=result.status.value,
+                    confidence=result.confidence,
+                    reasoning=result.reasoning,
+                    photo_bytes=snapshot,
+                )
+                logger.info("Status changed: %s -> %s", old.value, result.status.value)
+                status_just_changed = True
+            elif result.confidence < settings.confidence_threshold:
+                logger.warning(
+                    "Low confidence (%.2f < %.2f). Status unchanged.",
+                    result.confidence,
+                    settings.confidence_threshold,
+                )
 
         # Reminder: box ancora aperto
         if (
@@ -111,15 +126,18 @@ async def _check_garage_async(settings: Settings) -> str:
 
         # Track usage
         period = now.strftime("%Y_%m")
-        store.increment_usage(
-            period,
+        usage = dict(
             function_invocations=1,
-            gemini_calls=1,
-            gemini_input_tokens=result.input_tokens,
-            gemini_output_tokens=result.output_tokens,
             firestore_reads=2,
             firestore_writes=3,
         )
+        if gemini_called:
+            usage.update(
+                gemini_calls=1,
+                gemini_input_tokens=result.input_tokens,
+                gemini_output_tokens=result.output_tokens,
+            )
+        store.increment_usage(period, **usage)
 
         return "OK"
 
