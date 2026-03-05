@@ -25,7 +25,7 @@ def _make_settings(**overrides):
         "blink_password": "pass",
         "blink_camera_name": "Garage",
         "gemini_api_key": "fake-key",
-        "gemini_model": "gemini-2.5-flash-lite",
+        "gemini_model": "gemini-2.5-flash",
         "confidence_threshold": 0.7,
         "telegram_bot_token": "fake-token",
         "telegram_chat_id": "123",

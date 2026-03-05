@@ -42,7 +42,7 @@ Se l'immagine è troppo scura o sfocata, imposta confidence sotto 0.5."""
 class GeminiAnalyzer:
     """Classifies garage door state from a JPEG image via Gemini."""
 
-    def __init__(self, api_key: str, model: str = "gemini-2.5-flash-lite") -> None:
+    def __init__(self, api_key: str, model: str = "gemini-2.5-flash") -> None:
         self._client = genai.Client(api_key=api_key)
         self._model = model
 
