@@ -1,0 +1,15 @@
+.gcloudignore
+.git
+.gitignore
+.env
+.env.example
+__pycache__/
+*.pyc
+*.egg-info/
+tests/
+scripts/
+PLAN.md
+README.md
+pyproject.toml
+.venv/
+.pytest_cache/
