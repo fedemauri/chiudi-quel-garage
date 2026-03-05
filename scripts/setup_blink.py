@@ -41,8 +41,7 @@ async def main():
         except BlinkTwoFARequiredError:
             print("\n2FA richiesto! Controlla la tua email per il codice PIN.")
             pin = input("Inserisci il PIN 2FA: ").strip()
-            await auth.send_auth_key(blink, pin)
-            await blink.setup_post_verify()
+            await blink.send_2fa_code(pin)
 
         print(f"\nCamere trovate: {list(blink.cameras.keys())}")
 
