@@ -76,8 +76,8 @@ class TelegramNotifier:
         reads_pct = reads_daily / 50_000 * 100
         writes_pct = writes_daily / 20_000 * 100
         gemini_cost = (
-            stats.gemini_input_tokens * 0.075
-            + stats.gemini_output_tokens * 0.3
+            stats.gemini_input_tokens * 0.30
+            + stats.gemini_output_tokens * 2.50
         ) / 1_000_000
 
         warnings = []
