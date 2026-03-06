@@ -86,9 +86,11 @@ class FirestoreStore:
 
     def get_recent_events(self, limit: int = 10) -> list[dict]:
         """Get most recent status change events."""
+        from google.cloud.firestore_v1.base_query import FieldFilter
+
         query = (
             self._db.collection(self._collection)
-            .where("type", "==", "event")
+            .where(filter=FieldFilter("type", "==", "event"))
             .order_by("timestamp", direction="DESCENDING")
             .limit(limit)
         )

@@ -305,6 +305,20 @@ class TestCommands:
 
     @patch("garage_monitor.telegram_handler.TelegramNotifier")
     @patch("garage_monitor.telegram_handler.FirestoreStore")
+    def test_storico_error_handled(self, mock_store_cls, mock_tg_cls):
+        store = MagicMock()
+        store.get_recent_events.side_effect = Exception("Missing index")
+        mock_store_cls.return_value = store
+        notifier = MagicMock()
+        mock_tg_cls.return_value = notifier
+
+        result = handle_command({"message": {"text": "/storico"}}, _make_settings())
+
+        assert result == "STORICO_ERROR"
+        notifier.send_command_response.assert_called_once()
+
+    @patch("garage_monitor.telegram_handler.TelegramNotifier")
+    @patch("garage_monitor.telegram_handler.FirestoreStore")
     def test_unknown_command(self, mock_store_cls, mock_tg_cls):
         store = MagicMock()
         mock_store_cls.return_value = store

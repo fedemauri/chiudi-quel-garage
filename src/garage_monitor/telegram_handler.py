@@ -105,6 +105,11 @@ def _cmd_smuto(store: FirestoreStore, notifier: TelegramNotifier) -> str:
 
 
 def _cmd_storico(store: FirestoreStore, notifier: TelegramNotifier) -> str:
-    events = store.get_recent_events(10)
+    try:
+        events = store.get_recent_events(10)
+    except Exception as e:
+        logger.exception("Error fetching events: %s", e)
+        notifier.send_command_response("Errore nel recupero storico. Indice Firestore mancante?")
+        return "STORICO_ERROR"
     notifier.send_history(events)
     return "STORICO_SENT"
