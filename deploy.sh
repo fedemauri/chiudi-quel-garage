@@ -43,10 +43,10 @@ gcloud functions deploy "$FUNCTION_NAME" \
     --source=. \
     --entry-point=check_garage \
     --trigger-http \
-    --no-allow-unauthenticated \
+    --allow-unauthenticated \
     --memory=256Mi \
     --timeout=120s \
-    --set-env-vars="GM_BLINK_USERNAME=$GM_BLINK_USERNAME,GM_BLINK_PASSWORD=$GM_BLINK_PASSWORD,GM_BLINK_CAMERA_NAME=${GM_BLINK_CAMERA_NAME:-Garage},GM_GEMINI_API_KEY=$GM_GEMINI_API_KEY,GM_GEMINI_MODEL=${GM_GEMINI_MODEL:-gemini-2.5-flash},GM_CONFIDENCE_THRESHOLD=${GM_CONFIDENCE_THRESHOLD:-0.7},GM_TELEGRAM_BOT_TOKEN=$GM_TELEGRAM_BOT_TOKEN,GM_TELEGRAM_CHAT_ID=$GM_TELEGRAM_CHAT_ID,GM_GCP_PROJECT_ID=$PROJECT_ID,GM_FIRESTORE_COLLECTION=${GM_FIRESTORE_COLLECTION:-garage_monitor}"
+    --set-env-vars="GM_BLINK_USERNAME=$GM_BLINK_USERNAME,GM_BLINK_PASSWORD=$GM_BLINK_PASSWORD,GM_BLINK_CAMERA_NAME=${GM_BLINK_CAMERA_NAME:-Garage},GM_GEMINI_API_KEY=$GM_GEMINI_API_KEY,GM_GEMINI_MODEL=${GM_GEMINI_MODEL:-gemini-2.5-flash},GM_CONFIDENCE_THRESHOLD=${GM_CONFIDENCE_THRESHOLD:-0.7},GM_TELEGRAM_BOT_TOKEN=$GM_TELEGRAM_BOT_TOKEN,GM_TELEGRAM_CHAT_ID=$GM_TELEGRAM_CHAT_ID,GM_GCP_PROJECT_ID=$PROJECT_ID,GM_FIRESTORE_COLLECTION=${GM_FIRESTORE_COLLECTION:-garage_monitor},GM_TELEGRAM_WEBHOOK_SECRET=${GM_TELEGRAM_WEBHOOK_SECRET:-},GM_GEMINI_COST_ALERT_THRESHOLD=${GM_GEMINI_COST_ALERT_THRESHOLD:-3.0}"
 
 FUNCTION_URL=$(gcloud functions describe "$FUNCTION_NAME" --gen2 --region="$REGION" --format='value(serviceConfig.uri)')
 echo "Function URL: $FUNCTION_URL"
@@ -106,3 +106,4 @@ echo "Comandi utili:"
 echo "  Logs:    gcloud functions logs read $FUNCTION_NAME --gen2 --region=$REGION"
 echo "  Trigger: gcloud scheduler jobs run $SCHEDULER_JOB_DAY --location=$REGION"
 echo "  Jobs:    gcloud scheduler jobs list --location=$REGION"
+echo "  Webhook: python scripts/setup_telegram_webhook.py $FUNCTION_URL"

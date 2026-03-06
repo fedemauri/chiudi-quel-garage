@@ -14,3 +14,5 @@ class Settings(BaseSettings):
     telegram_chat_id: str
     gcp_project_id: str
     firestore_collection: str = "garage_monitor"
+    gemini_cost_alert_threshold: float = 3.0
+    telegram_webhook_secret: str = ""

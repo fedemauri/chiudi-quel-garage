@@ -26,6 +26,8 @@ class GarageState:
     consecutive_errors: int = 0
     last_reminder_time: datetime | None = None
     last_image_hash: str | None = None
+    muted_until: datetime | None = None
+    last_final_warning_sent: bool = False
 
 
 @dataclass
@@ -37,3 +39,4 @@ class UsageStats:
     gemini_output_tokens: int = 0
     firestore_reads: int = 0
     firestore_writes: int = 0
+    garage_openings: int = 0

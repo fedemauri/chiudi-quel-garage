@@ -7,7 +7,10 @@ import pytest
 
 from garage_monitor.gemini_analyzer import GeminiParseError
 from garage_monitor.main import (
+    STALENESS_MARGIN_DAY,
+    STALENESS_MARGIN_NIGHT,
     _check_garage_async,
+    _is_night_time,
     _send_usage_report,
     check_garage,
 )
@@ -31,6 +34,8 @@ def _make_settings(**overrides):
         "telegram_chat_id": "123",
         "gcp_project_id": "test-project",
         "firestore_collection": "garage_monitor",
+        "gemini_cost_alert_threshold": 3.0,
+        "telegram_webhook_secret": "test-secret",
     }
     defaults.update(overrides)
     settings = MagicMock()
@@ -529,3 +534,378 @@ class TestUsageReport:
 
         assert result_text == "REPORT_SENT"
         assert status_code == 200
+
+
+class TestStalenessDetection:
+    @patch("garage_monitor.main.BlinkClient")
+    @patch("garage_monitor.main.GeminiAnalyzer")
+    @patch("garage_monitor.main.TelegramNotifier")
+    @patch("garage_monitor.main.FirestoreStore")
+    def test_stale_check_sends_alert(
+        self, mock_store_cls, mock_tg_cls, mock_gem_cls, mock_blink_cls
+    ):
+        """last_check 15+ min ago during daytime -> staleness alert sent."""
+        now = datetime.now(timezone.utc)
+        _, notifier, _, _ = _setup_mocks(
+            mock_store_cls, mock_tg_cls, mock_gem_cls, mock_blink_cls,
+            state=GarageState(
+                current_status=GarageStatus.CLOSED,
+                last_check_time=now - timedelta(minutes=15),
+                last_change_time=now - timedelta(hours=1),
+            ),
+        )
+
+        with patch("garage_monitor.main._is_night_time", return_value=False):
+            result = asyncio.run(_check_garage_async(_make_settings()))
+
+        assert result == "OK"
+        # Staleness alert was sent via send_error_alert
+        alert_calls = [
+            call for call in notifier.send_error_alert.call_args_list
+            if "Possibile interruzione" in call[0][0]
+        ]
+        assert len(alert_calls) == 1
+        assert "15 minuti fa" in alert_calls[0][0][0]
+
+    @patch("garage_monitor.main.BlinkClient")
+    @patch("garage_monitor.main.GeminiAnalyzer")
+    @patch("garage_monitor.main.TelegramNotifier")
+    @patch("garage_monitor.main.FirestoreStore")
+    def test_fresh_check_no_alert(
+        self, mock_store_cls, mock_tg_cls, mock_gem_cls, mock_blink_cls
+    ):
+        """last_check 4 min ago -> no staleness alert."""
+        now = datetime.now(timezone.utc)
+        _, notifier, _, _ = _setup_mocks(
+            mock_store_cls, mock_tg_cls, mock_gem_cls, mock_blink_cls,
+            state=GarageState(
+                current_status=GarageStatus.CLOSED,
+                last_check_time=now - timedelta(minutes=4),
+                last_change_time=now - timedelta(hours=1),
+            ),
+        )
+
+        with patch("garage_monitor.main._is_night_time", return_value=False):
+            result = asyncio.run(_check_garage_async(_make_settings()))
+
+        assert result == "OK"
+        # No staleness alert
+        for call in notifier.send_error_alert.call_args_list:
+            assert "Possibile interruzione" not in call[0][0]
+
+    @patch("garage_monitor.main.BlinkClient")
+    @patch("garage_monitor.main.GeminiAnalyzer")
+    @patch("garage_monitor.main.TelegramNotifier")
+    @patch("garage_monitor.main.FirestoreStore")
+    def test_first_run_no_staleness_check(
+        self, mock_store_cls, mock_tg_cls, mock_gem_cls, mock_blink_cls
+    ):
+        """state is None (first run) -> no staleness check."""
+        _, notifier, _, _ = _setup_mocks(
+            mock_store_cls, mock_tg_cls, mock_gem_cls, mock_blink_cls,
+            state=None,
+        )
+
+        result = asyncio.run(_check_garage_async(_make_settings()))
+
+        assert result == "OK"
+        notifier.send_error_alert.assert_not_called()
+
+    @patch("garage_monitor.main.BlinkClient")
+    @patch("garage_monitor.main.GeminiAnalyzer")
+    @patch("garage_monitor.main.TelegramNotifier")
+    @patch("garage_monitor.main.FirestoreStore")
+    def test_night_uses_wider_margin(
+        self, mock_store_cls, mock_tg_cls, mock_gem_cls, mock_blink_cls
+    ):
+        """At night, 15 min is NOT stale (margin is 20 min)."""
+        now = datetime.now(timezone.utc)
+        _, notifier, _, _ = _setup_mocks(
+            mock_store_cls, mock_tg_cls, mock_gem_cls, mock_blink_cls,
+            state=GarageState(
+                current_status=GarageStatus.CLOSED,
+                last_check_time=now - timedelta(minutes=15),
+                last_change_time=now - timedelta(hours=1),
+            ),
+        )
+
+        with patch("garage_monitor.main._is_night_time", return_value=True):
+            result = asyncio.run(_check_garage_async(_make_settings()))
+
+        assert result == "OK"
+        # 15 min < 20 min night margin -> no staleness alert
+        for call in notifier.send_error_alert.call_args_list:
+            assert "Possibile interruzione" not in call[0][0]
+
+
+class TestNightAlert:
+    @patch("garage_monitor.main._is_night_time", return_value=True)
+    @patch("garage_monitor.main.BlinkClient")
+    @patch("garage_monitor.main.GeminiAnalyzer")
+    @patch("garage_monitor.main.TelegramNotifier")
+    @patch("garage_monitor.main.FirestoreStore")
+    def test_open_at_night_sends_night_alert(
+        self, mock_store_cls, mock_tg_cls, mock_gem_cls, mock_blink_cls, _mock_night
+    ):
+        """Garage opens at night -> send_night_alert called instead of send_status_change."""
+        now = datetime.now(timezone.utc)
+        _, notifier, _, _ = _setup_mocks(
+            mock_store_cls, mock_tg_cls, mock_gem_cls, mock_blink_cls,
+            state=GarageState(
+                current_status=GarageStatus.CLOSED,
+                last_check_time=now,
+                last_change_time=now,
+            ),
+            analysis_status=GarageStatus.OPEN,
+            analysis_confidence=0.9,
+            analysis_reasoning="Door raised",
+        )
+
+        result = asyncio.run(_check_garage_async(_make_settings()))
+
+        assert result == "OK"
+        notifier.send_night_alert.assert_called_once()
+        call_kwargs = notifier.send_night_alert.call_args[1]
+        assert call_kwargs["confidence"] == 0.9
+        assert call_kwargs["reasoning"] == "Door raised"
+        notifier.send_status_change.assert_not_called()
+
+    @patch("garage_monitor.main._is_night_time", return_value=False)
+    @patch("garage_monitor.main.BlinkClient")
+    @patch("garage_monitor.main.GeminiAnalyzer")
+    @patch("garage_monitor.main.TelegramNotifier")
+    @patch("garage_monitor.main.FirestoreStore")
+    def test_open_during_day_sends_status_change(
+        self, mock_store_cls, mock_tg_cls, mock_gem_cls, mock_blink_cls, _mock_night
+    ):
+        """Garage opens during day -> send_status_change called (not night_alert)."""
+        now = datetime.now(timezone.utc)
+        _, notifier, _, _ = _setup_mocks(
+            mock_store_cls, mock_tg_cls, mock_gem_cls, mock_blink_cls,
+            state=GarageState(
+                current_status=GarageStatus.CLOSED,
+                last_check_time=now,
+                last_change_time=now,
+            ),
+            analysis_status=GarageStatus.OPEN,
+            analysis_confidence=0.9,
+            analysis_reasoning="Door raised",
+        )
+
+        result = asyncio.run(_check_garage_async(_make_settings()))
+
+        assert result == "OK"
+        notifier.send_status_change.assert_called_once()
+        notifier.send_night_alert.assert_not_called()
+
+
+class TestFinalWarning:
+    @patch("garage_monitor.main.BlinkClient")
+    @patch("garage_monitor.main.GeminiAnalyzer")
+    @patch("garage_monitor.main.TelegramNotifier")
+    @patch("garage_monitor.main.FirestoreStore")
+    def test_final_warning_sent_after_60_min(
+        self, mock_store_cls, mock_tg_cls, mock_gem_cls, mock_blink_cls
+    ):
+        """Garage open >60 min, final warning not yet sent -> send_final_warning called."""
+        now = datetime.now(timezone.utc)
+        store, notifier, _, _ = _setup_mocks(
+            mock_store_cls, mock_tg_cls, mock_gem_cls, mock_blink_cls,
+            state=GarageState(
+                current_status=GarageStatus.OPEN,
+                last_check_time=now - timedelta(minutes=5),
+                last_change_time=now - timedelta(minutes=65),
+                last_reminder_time=now - timedelta(minutes=20),
+                last_final_warning_sent=False,
+            ),
+            analysis_status=GarageStatus.OPEN,
+            analysis_confidence=0.9,
+            analysis_reasoning="Door open",
+        )
+
+        result = asyncio.run(_check_garage_async(_make_settings()))
+
+        assert result == "OK"
+        notifier.send_final_warning.assert_called_once()
+        call_args = notifier.send_final_warning.call_args[0]
+        assert call_args[0] >= 65  # minutes_open
+        # Flag is set to True
+        saved_state = store.save_state.call_args[0][0]
+        assert saved_state.last_final_warning_sent is True
+
+    @patch("garage_monitor.main.BlinkClient")
+    @patch("garage_monitor.main.GeminiAnalyzer")
+    @patch("garage_monitor.main.TelegramNotifier")
+    @patch("garage_monitor.main.FirestoreStore")
+    def test_final_warning_not_duplicated(
+        self, mock_store_cls, mock_tg_cls, mock_gem_cls, mock_blink_cls
+    ):
+        """Garage open >60 min, final warning already sent -> no duplicate."""
+        now = datetime.now(timezone.utc)
+        _, notifier, _, _ = _setup_mocks(
+            mock_store_cls, mock_tg_cls, mock_gem_cls, mock_blink_cls,
+            state=GarageState(
+                current_status=GarageStatus.OPEN,
+                last_check_time=now - timedelta(minutes=5),
+                last_change_time=now - timedelta(minutes=65),
+                last_reminder_time=now - timedelta(minutes=20),
+                last_final_warning_sent=True,
+            ),
+            analysis_status=GarageStatus.OPEN,
+            analysis_confidence=0.9,
+            analysis_reasoning="Door open",
+        )
+
+        result = asyncio.run(_check_garage_async(_make_settings()))
+
+        assert result == "OK"
+        notifier.send_final_warning.assert_not_called()
+
+    @patch("garage_monitor.main.BlinkClient")
+    @patch("garage_monitor.main.GeminiAnalyzer")
+    @patch("garage_monitor.main.TelegramNotifier")
+    @patch("garage_monitor.main.FirestoreStore")
+    def test_final_warning_resets_on_close(
+        self, mock_store_cls, mock_tg_cls, mock_gem_cls, mock_blink_cls
+    ):
+        """Garage closes -> last_final_warning_sent resets to False."""
+        now = datetime.now(timezone.utc)
+        store, notifier, _, _ = _setup_mocks(
+            mock_store_cls, mock_tg_cls, mock_gem_cls, mock_blink_cls,
+            state=GarageState(
+                current_status=GarageStatus.OPEN,
+                last_check_time=now - timedelta(minutes=5),
+                last_change_time=now - timedelta(minutes=70),
+                last_reminder_time=now - timedelta(minutes=20),
+                last_final_warning_sent=True,
+            ),
+            analysis_status=GarageStatus.CLOSED,
+            analysis_confidence=0.95,
+            analysis_reasoning="Door closed",
+        )
+
+        result = asyncio.run(_check_garage_async(_make_settings()))
+
+        assert result == "OK"
+        saved_state = store.save_state.call_args[0][0]
+        assert saved_state.last_final_warning_sent is False
+
+
+class TestEventHistory:
+    @patch("garage_monitor.main.BlinkClient")
+    @patch("garage_monitor.main.GeminiAnalyzer")
+    @patch("garage_monitor.main.TelegramNotifier")
+    @patch("garage_monitor.main.FirestoreStore")
+    def test_status_change_logs_event(
+        self, mock_store_cls, mock_tg_cls, mock_gem_cls, mock_blink_cls
+    ):
+        """Status change -> store.save_event called with correct data."""
+        now = datetime.now(timezone.utc)
+        store, _, _, _ = _setup_mocks(
+            mock_store_cls, mock_tg_cls, mock_gem_cls, mock_blink_cls,
+            state=GarageState(
+                current_status=GarageStatus.CLOSED,
+                last_check_time=now,
+                last_change_time=now - timedelta(minutes=30),
+            ),
+            analysis_status=GarageStatus.OPEN,
+            analysis_confidence=0.9,
+            analysis_reasoning="Door raised",
+        )
+
+        result = asyncio.run(_check_garage_async(_make_settings()))
+
+        assert result == "OK"
+        store.save_event.assert_called_once()
+        event = store.save_event.call_args[0][0]
+        assert event["old_status"] == "closed"
+        assert event["new_status"] == "open"
+        assert event["confidence"] == 0.9
+        assert event["reasoning"] == "Door raised"
+        assert "timestamp" in event
+        assert "expire_at" in event
+
+    @patch("garage_monitor.main.BlinkClient")
+    @patch("garage_monitor.main.GeminiAnalyzer")
+    @patch("garage_monitor.main.TelegramNotifier")
+    @patch("garage_monitor.main.FirestoreStore")
+    def test_close_event_has_duration(
+        self, mock_store_cls, mock_tg_cls, mock_gem_cls, mock_blink_cls
+    ):
+        """Close event -> duration_seconds is calculated."""
+        now = datetime.now(timezone.utc)
+        store, _, _, _ = _setup_mocks(
+            mock_store_cls, mock_tg_cls, mock_gem_cls, mock_blink_cls,
+            state=GarageState(
+                current_status=GarageStatus.OPEN,
+                last_check_time=now - timedelta(minutes=5),
+                last_change_time=now - timedelta(minutes=30),
+            ),
+            analysis_status=GarageStatus.CLOSED,
+            analysis_confidence=0.95,
+            analysis_reasoning="Door closed",
+        )
+
+        result = asyncio.run(_check_garage_async(_make_settings()))
+
+        assert result == "OK"
+        store.save_event.assert_called_once()
+        event = store.save_event.call_args[0][0]
+        assert event["new_status"] == "closed"
+        assert event["duration_seconds"] is not None
+        assert event["duration_seconds"] >= 30 * 60  # at least 30 min in seconds
+
+    @patch("garage_monitor.main.BlinkClient")
+    @patch("garage_monitor.main.GeminiAnalyzer")
+    @patch("garage_monitor.main.TelegramNotifier")
+    @patch("garage_monitor.main.FirestoreStore")
+    def test_open_event_no_duration(
+        self, mock_store_cls, mock_tg_cls, mock_gem_cls, mock_blink_cls
+    ):
+        """Open event -> duration_seconds is None."""
+        now = datetime.now(timezone.utc)
+        store, _, _, _ = _setup_mocks(
+            mock_store_cls, mock_tg_cls, mock_gem_cls, mock_blink_cls,
+            state=GarageState(
+                current_status=GarageStatus.CLOSED,
+                last_check_time=now,
+                last_change_time=now,
+            ),
+            analysis_status=GarageStatus.OPEN,
+            analysis_confidence=0.9,
+            analysis_reasoning="Door raised",
+        )
+
+        result = asyncio.run(_check_garage_async(_make_settings()))
+
+        assert result == "OK"
+        store.save_event.assert_called_once()
+        event = store.save_event.call_args[0][0]
+        assert event["new_status"] == "open"
+        assert event["duration_seconds"] is None
+
+    @patch("garage_monitor.main.BlinkClient")
+    @patch("garage_monitor.main.GeminiAnalyzer")
+    @patch("garage_monitor.main.TelegramNotifier")
+    @patch("garage_monitor.main.FirestoreStore")
+    def test_no_event_on_same_status(
+        self, mock_store_cls, mock_tg_cls, mock_gem_cls, mock_blink_cls
+    ):
+        """No status change -> no event saved."""
+        now = datetime.now(timezone.utc)
+        store, _, _, _ = _setup_mocks(
+            mock_store_cls, mock_tg_cls, mock_gem_cls, mock_blink_cls,
+            state=GarageState(
+                current_status=GarageStatus.CLOSED,
+                last_check_time=now,
+                last_change_time=now,
+            ),
+            analysis_status=GarageStatus.CLOSED,
+            analysis_confidence=0.95,
+            analysis_reasoning="Door closed",
+        )
+
+        result = asyncio.run(_check_garage_async(_make_settings()))
+
+        assert result == "OK"
+        store.save_event.assert_not_called()

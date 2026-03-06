@@ -40,6 +40,13 @@ gcloud firestore databases create --location=eur3 2>/dev/null || \
     echo "Database Firestore gia' esistente, continuo."
 
 echo ""
+echo ">>> Abilito TTL policy su campo expire_at per pulizia automatica eventi..."
+gcloud firestore fields ttls update expire_at \
+    --collection-group=garage_monitor \
+    --enable-ttl 2>/dev/null || \
+    echo "TTL policy gia' configurata o non supportata, continuo."
+
+echo ""
 echo "=== Setup GCP completato! ==="
 echo ""
 echo "Prossimi passi:"

@@ -1,7 +1,8 @@
 import asyncio
 import hashlib
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 import functions_framework
 
@@ -18,6 +19,14 @@ logging.basicConfig(level=logging.INFO)
 MAX_CONSECUTIVE_ERRORS = 3
 REMINDER_INTERVAL_MINUTES = 15
 MAX_REMINDER_MINUTES = 60
+STALENESS_MARGIN_DAY = 12
+STALENESS_MARGIN_NIGHT = 20
+ROME_TZ = ZoneInfo("Europe/Rome")
+
+
+def _is_night_time(utc_now: datetime) -> bool:
+    """Return True if the local time in Rome is between 0:00 and 6:59 (matching scheduler night hours)."""
+    return 0 <= utc_now.astimezone(ROME_TZ).hour < 7
 
 
 async def _check_garage_async(settings: Settings) -> str:
@@ -31,6 +40,17 @@ async def _check_garage_async(settings: Settings) -> str:
         state = GarageState()
 
     now = datetime.now(timezone.utc)
+
+    # Staleness detection: alert if last check is older than expected
+    if not first_run and state.last_check_time is not None:
+        margin = STALENESS_MARGIN_NIGHT if _is_night_time(now) else STALENESS_MARGIN_DAY
+        elapsed_minutes = (now - state.last_check_time).total_seconds() / 60
+        if elapsed_minutes > margin:
+            notifier.send_error_alert(
+                f"Possibile interruzione: ultimo controllo {int(elapsed_minutes)} minuti fa "
+                f"(atteso max {margin} min)."
+            )
+
     blink = BlinkClient()
 
     try:
@@ -82,18 +102,41 @@ async def _check_garage_async(settings: Settings) -> str:
                 and result.status != state.current_status
             ):
                 old = state.current_status
+                old_change_time = state.last_change_time
                 state.current_status = result.status
                 state.last_change_time = now
                 state.last_reminder_time = None
-                notifier.send_status_change(
-                    old_status=old.value,
-                    new_status=result.status.value,
-                    confidence=result.confidence,
-                    reasoning=result.reasoning,
-                    photo_bytes=snapshot,
-                )
+                state.last_final_warning_sent = False
+                if result.status == GarageStatus.OPEN and _is_night_time(now):
+                    notifier.send_night_alert(
+                        confidence=result.confidence,
+                        reasoning=result.reasoning,
+                        photo_bytes=snapshot,
+                    )
+                else:
+                    notifier.send_status_change(
+                        old_status=old.value,
+                        new_status=result.status.value,
+                        confidence=result.confidence,
+                        reasoning=result.reasoning,
+                        photo_bytes=snapshot,
+                    )
                 logger.info("Status changed: %s -> %s", old.value, result.status.value)
                 status_just_changed = True
+
+                # Log event to Firestore
+                duration_seconds = None
+                if result.status == GarageStatus.CLOSED and old_change_time:
+                    duration_seconds = int((now - old_change_time).total_seconds())
+                store.save_event({
+                    "timestamp": now,
+                    "old_status": old.value,
+                    "new_status": result.status.value,
+                    "confidence": result.confidence,
+                    "reasoning": result.reasoning,
+                    "duration_seconds": duration_seconds,
+                    "expire_at": now + timedelta(days=30),
+                })
             elif result.confidence < settings.confidence_threshold:
                 logger.warning(
                     "Low confidence (%.2f < %.2f). Status unchanged.",
@@ -101,10 +144,16 @@ async def _check_garage_async(settings: Settings) -> str:
                     settings.confidence_threshold,
                 )
 
+        # Auto-expire mute
+        is_muted = state.muted_until is not None and state.muted_until > now
+        if state.muted_until is not None and state.muted_until <= now:
+            state.muted_until = None
+
         # Reminder: box ancora aperto
         if (
             not first_run
             and not status_just_changed
+            and not is_muted
             and state.current_status == GarageStatus.OPEN
             and state.last_change_time is not None
         ):
@@ -120,6 +169,9 @@ async def _check_garage_async(settings: Settings) -> str:
                         int(minutes_open), snapshot
                     )
                     state.last_reminder_time = now
+            elif minutes_open > MAX_REMINDER_MINUTES and not state.last_final_warning_sent:
+                notifier.send_final_warning(int(minutes_open), snapshot)
+                state.last_final_warning_sent = True
 
         store.save_state(state)
         store.save_blink_credentials(updated_creds)
@@ -137,6 +189,10 @@ async def _check_garage_async(settings: Settings) -> str:
                 gemini_input_tokens=result.input_tokens,
                 gemini_output_tokens=result.output_tokens,
             )
+        if status_just_changed:
+            usage["firestore_writes"] = usage.get("firestore_writes", 0) + 1
+            if result.status == GarageStatus.OPEN:
+                usage["garage_openings"] = 1
         store.increment_usage(period, **usage)
 
         return "OK"
@@ -197,12 +253,55 @@ def _send_usage_report(settings: Settings) -> None:
         period, firestore_reads=1, firestore_writes=1, function_invocations=1
     )
 
-    notifier.send_usage_report(stats, days_in_period)
+    # Projected monthly Gemini cost alert
+    cost_warning = None
+    if days_in_period > 0:
+        current_cost = (
+            stats.gemini_input_tokens * 0.30
+            + stats.gemini_output_tokens * 2.50
+        ) / 1_000_000
+        projected_cost = current_cost / days_in_period * 30
+        if projected_cost > settings.gemini_cost_alert_threshold:
+            cost_warning = (
+                f"Costo Gemini proiettato: ~${projected_cost:.2f}/mese "
+                f"(soglia: ${settings.gemini_cost_alert_threshold:.2f})"
+            )
+
+    notifier.send_usage_report(stats, days_in_period, cost_warning=cost_warning)
+
+
+def _handle_telegram_webhook(request, body: dict, settings: Settings):
+    """Validate and dispatch Telegram webhook requests."""
+    # Webhook disabled if secret not configured
+    if not settings.telegram_webhook_secret:
+        return "WEBHOOK_DISABLED", 403
+
+    # Validate secret token header
+    secret = request.headers.get("X-Telegram-Bot-Api-Secret-Token", "")
+    if secret != settings.telegram_webhook_secret:
+        return "INVALID_SECRET", 403
+
+    # Extract chat_id from message or callback_query
+    message = body.get("message") or body.get("callback_query", {}).get("message") or {}
+    chat_id = str(message.get("chat", {}).get("id", ""))
+    if chat_id != settings.telegram_chat_id:
+        return "OK", 200  # Return 200 to avoid Telegram retries
+
+    from garage_monitor.telegram_handler import handle_command
+    result = handle_command(body, settings)
+    return result, 200
 
 
 @functions_framework.http
 def check_garage(request):
     settings = Settings()
+
+    # Telegram webhook? (JSON body with "message" or "callback_query" field)
+    if request.content_type and "application/json" in request.content_type:
+        body = request.get_json(silent=True)
+        if body and ("message" in body or "callback_query" in body):
+            return _handle_telegram_webhook(request, body, settings)
+
     action = request.args.get("action")
     if action == "report":
         _send_usage_report(settings)

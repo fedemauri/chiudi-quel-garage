@@ -25,6 +25,8 @@ class FirestoreStore:
             consecutive_errors=data.get("consecutive_errors", 0),
             last_reminder_time=data.get("last_reminder_time"),
             last_image_hash=data.get("last_image_hash"),
+            muted_until=data.get("muted_until"),
+            last_final_warning_sent=data.get("last_final_warning_sent", False),
         )
 
     def save_state(self, state: GarageState) -> None:
@@ -36,6 +38,8 @@ class FirestoreStore:
             "consecutive_errors": state.consecutive_errors,
             "last_reminder_time": state.last_reminder_time,
             "last_image_hash": state.last_image_hash,
+            "muted_until": state.muted_until,
+            "last_final_warning_sent": state.last_final_warning_sent,
         })
 
     def get_blink_credentials(self) -> dict | None:
@@ -64,6 +68,7 @@ class FirestoreStore:
             gemini_output_tokens=data.get("gemini_output_tokens", 0),
             firestore_reads=data.get("firestore_reads", 0),
             firestore_writes=data.get("firestore_writes", 0),
+            garage_openings=data.get("garage_openings", 0),
         )
 
     def increment_usage(self, period: str, **counters: int) -> None:
@@ -72,3 +77,19 @@ class FirestoreStore:
         updates = {"period": period}
         updates.update({k: Increment(v) for k, v in counters.items() if v})
         doc_ref.set(updates, merge=True)
+
+    def save_event(self, event: dict) -> None:
+        """Save a status change event."""
+        doc_id = f"event_{event['timestamp'].strftime('%Y%m%dT%H%M%SZ')}"
+        event["type"] = "event"
+        self._doc(doc_id).set(event)
+
+    def get_recent_events(self, limit: int = 10) -> list[dict]:
+        """Get most recent status change events."""
+        query = (
+            self._db.collection(self._collection)
+            .where("type", "==", "event")
+            .order_by("timestamp", direction="DESCENDING")
+            .limit(limit)
+        )
+        return [doc.to_dict() for doc in query.stream()]
