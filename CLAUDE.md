@@ -88,7 +88,7 @@ gcloud scheduler jobs run garage-monitor-day --location=europe-west1
 - **Final warning:** One-time escalation alert after garage has been open >60 min
 - **Health check:** Staleness detection alerts if last check exceeds expected interval (12 min day, 20 min night)
 - **Cost monitoring:** Projected monthly Gemini cost alert in daily report when exceeding threshold
-- **Event history:** Status changes logged to Firestore with 30-day TTL, viewable via `/storico`
+- **Event history:** Status changes logged to Firestore with 30-day TTL, viewable via `/storico`. Requires composite index on `(type ASC, timestamp DESC)`
 - **Error handling:** Tracks consecutive errors in Firestore, alerts via Telegram after 3 failures
 - **Credentials refresh:** Blink tokens are refreshed on each call and saved back to Firestore
 - **Usage tracking:** Firestore counters track invocations, Gemini tokens, Firestore ops, and garage openings per month

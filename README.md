@@ -30,9 +30,11 @@ Google Cloud Function "check-garage" (Python 3.12, gen2, 256 MB, 120s timeout)
   |
   +---> Firestore (collection: garage_monitor)
   |       - doc "state": current_status, last_check_time, last_change_time,
-  |                       consecutive_errors, last_reminder_time, last_image_hash
+  |                       consecutive_errors, last_reminder_time, last_image_hash,
+  |                       muted_until, last_final_warning_sent
   |       - doc "blink_credentials": login_attributes (auto-refreshed tokens)
   |       - doc "usage_stats_YYYY_MM": monthly invocation/token/cost counters
+  |       - doc "event_*": status change events (30-day TTL via expire_at field)
   |
   +---> Blink API (via blinkpy library, async)
   |       - Auth with saved credentials (no interactive 2FA)
@@ -48,10 +50,16 @@ Google Cloud Function "check-garage" (Python 3.12, gen2, 256 MB, 120s timeout)
   |       - Skipped when image hash matches previous (cost optimization)
   |
   +---> Telegram Bot API (via httpx)
-          - Status change notifications (with photo)
-          - "Still open" reminders (with photo)
-          - Error alerts (text only)
-          - Daily usage reports (text only)
+  |       - Status change notifications (with photo)
+  |       - Night alerts (priority notification when garage opens 0:00–6:59)
+  |       - "Still open" reminders (with photo, every 15 min up to 60 min)
+  |       - Final warning (one-time escalation after 60 min open)
+  |       - Error alerts (text only)
+  |       - Daily usage reports (text only)
+  |
+  +<---- Telegram Webhook (inbound bot commands)
+          - Validated via X-Telegram-Bot-Api-Secret-Token header + chat_id
+          - Commands: /stato, /foto, /storico, /report, /muto, /smuto
 
 Timezone: Europe/Rome (all scheduler cron expressions)
 ```
@@ -163,6 +171,8 @@ Edit `.env` and fill in all values. Every variable uses the `GM_` prefix:
 | `GM_TELEGRAM_CHAT_ID` | yes | — | Numeric chat ID where notifications are sent |
 | `GM_GCP_PROJECT_ID` | yes | — | Your Google Cloud project ID |
 | `GM_FIRESTORE_COLLECTION` | no | `garage_monitor` | Firestore collection name. Change only if running multiple instances |
+| `GM_TELEGRAM_WEBHOOK_SECRET` | no | `""` | Secret token for Telegram webhook validation. Required to enable interactive bot commands. Generate with `openssl rand -hex 32` |
+| `GM_GEMINI_COST_ALERT_THRESHOLD` | no | `3.0` | Monthly projected Gemini cost threshold ($) — triggers a warning in the daily report if exceeded |
 
 ### Step 5 — Blink Authentication (one-time, interactive)
 
@@ -201,7 +211,7 @@ The `deploy.sh` script performs a complete deployment:
 What it does:
 1. Loads variables from `.env`
 2. Validates all required variables are set
-3. Deploys the Cloud Function (`check-garage`, gen2, `europe-west1`, 256 MB RAM, 120s timeout, HTTP trigger, no unauthenticated access)
+3. Deploys the Cloud Function (`check-garage`, gen2, `europe-west1`, 256 MB RAM, 120s timeout, HTTP trigger, `--allow-unauthenticated` for Telegram webhook access)
 4. Cleans up any legacy scheduler jobs
 5. Creates three Cloud Scheduler jobs:
    - `garage-monitor-day`: every 5 minutes from 7:00 to 23:59 (Europe/Rome)
@@ -210,6 +220,49 @@ What it does:
 6. Runs a manual test invocation to verify the deployment
 
 All scheduler jobs use OIDC authentication with the default compute service account.
+
+### Step 8 — Telegram Webhook (enables bot commands)
+
+After deploy, register the Telegram webhook so the bot can receive interactive commands:
+
+```bash
+source .env
+python scripts/setup_telegram_webhook.py <FUNCTION_URL>
+```
+
+This tells Telegram to forward all messages sent to the bot to your Cloud Function. The webhook is secured via the `GM_TELEGRAM_WEBHOOK_SECRET` header validation. This step is only needed once (unless the function URL changes).
+
+### Step 9 — Firestore Composite Index (required for /storico)
+
+The `/storico` command queries events with a `where` + `order_by`, which requires a composite index:
+
+```bash
+gcloud firestore indexes composite create --collection-group=garage_monitor --field-config field-path=type,order=ascending --field-config field-path=timestamp,order=descending --project=<YOUR_PROJECT_ID>
+```
+
+Index creation takes 2–3 minutes. Without this, `/storico` will return an error message (other commands work fine).
+
+### Step 10 — Firestore TTL (optional, recommended)
+
+Enable automatic cleanup of events older than 30 days:
+
+```bash
+gcloud firestore fields ttls update expire_at --collection-group=garage_monitor --enable-ttl --project=<YOUR_PROJECT_ID>
+```
+
+## Telegram Bot Commands
+
+Once the webhook is set up, you can interact with the bot via Telegram:
+
+| Command | Description |
+|---|---|
+| `/stato` | Current garage status (open/closed, time since last change, mute status) |
+| `/foto` | Take a live snapshot from the camera |
+| `/storico` | Last 10 status change events with timestamps and durations |
+| `/report` | Monthly usage report (invocations, Gemini cost, Firestore ops) |
+| `/muto` | Mute notifications for 2 hours (default) |
+| `/muto Nh` | Mute notifications for N hours (max 24h). Example: `/muto 5h` |
+| `/smuto` | Re-enable notifications immediately |
 
 ## Operations
 
@@ -263,24 +316,30 @@ pytest
 src/garage_monitor/
     __init__.py
     main.py              — Cloud Function entry point: check_garage(request)
-                           Handles ?action=report for usage reports
+                           Routes between: Telegram webhook, ?action=report, and normal check
                            Orchestrates the full pipeline (Blink -> Gemini -> Telegram)
     config.py            — Settings class (pydantic-settings, GM_ env prefix)
     blink_client.py      — Async Blink camera client (auth, snapshot, credential refresh)
     gemini_analyzer.py   — Gemini image analysis (structured prompt, JSON response parsing)
-    firestore_store.py   — Firestore persistence (state, credentials, usage counters)
-    telegram_notifier.py — Telegram Bot API client (notifications, reminders, error alerts, usage reports)
+    firestore_store.py   — Firestore persistence (state, credentials, usage counters, events)
+    telegram_notifier.py — Telegram Bot API client (notifications, reminders, alerts, reports, bot responses)
+    telegram_handler.py  — Interactive bot command handler (/stato, /foto, /muto, /smuto, /storico, /report)
     models.py            — Data models: GarageStatus (enum), GarageState, GeminiAnalysisResult, UsageStats
 
 scripts/
-    setup_gcp.sh         — One-time GCP setup (enable APIs, create Firestore DB)
-    setup_blink.py       — Interactive Blink 2FA authentication, saves credentials to Firestore
-    test_telegram.py     — Verify Telegram bot token and chat ID
+    setup_gcp.sh              — One-time GCP setup (enable APIs, create Firestore DB, TTL policy)
+    setup_blink.py            — Interactive Blink 2FA authentication, saves credentials to Firestore
+    test_telegram.py          — Verify Telegram bot token and chat ID
+    setup_telegram_webhook.py — Register/delete Telegram webhook for bot commands
 
 tests/
-    test_main.py         — Tests for the main orchestration logic
-    test_gemini_analyzer.py — Tests for Gemini response parsing
-    test_firestore_store.py — Tests for Firestore persistence
+    test_main.py              — Tests for main orchestration (staleness, night alerts, final warning, events)
+    test_telegram_handler.py  — Tests for webhook routing and bot commands
+    test_gemini_analyzer.py   — Tests for Gemini response parsing
+    test_firestore_store.py   — Tests for Firestore persistence
+
+docs/
+    SETUP_BOT.md       — Post-deploy guide for Telegram bot setup and troubleshooting
 
 deploy.sh              — Full deployment script (Cloud Function + Scheduler jobs)
 pyproject.toml         — Python project config (dependencies, pytest settings)
@@ -299,3 +358,6 @@ pyproject.toml         — Python project config (dependencies, pytest settings)
 | Confidence always below threshold | Poor lighting or camera angle | Ensure the camera is inside the garage, centered on the door. Check IR mode at night |
 | Gemini never called (logs show "skip Gemini") | Image dedup — camera returns identical bytes | Normal behavior when nothing changes. Will resume when the scene changes |
 | Cloud Function timeout | Blink API slow to respond | The function has a 120s timeout. If persistent, check Blink service status |
+| Bot commands not working | Webhook not registered or secret mismatch | Run `setup_telegram_webhook.py` with correct `GM_TELEGRAM_WEBHOOK_SECRET` |
+| `/storico` returns error | Missing Firestore composite index | Create the index — see Step 9 above |
+| Night false positives | IR image misclassified as "open" | Gemini prompt is tuned for this camera; adjust confidence threshold if needed |
