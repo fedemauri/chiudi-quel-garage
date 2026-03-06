@@ -21,6 +21,7 @@ REMINDER_INTERVAL_MINUTES = 15
 MAX_REMINDER_MINUTES = 60
 STALENESS_MARGIN_DAY = 12
 STALENESS_MARGIN_NIGHT = 20
+STATUS_CHANGE_CONFIRMATIONS = 2
 ROME_TZ = ZoneInfo("Europe/Rome")
 
 
@@ -97,52 +98,76 @@ async def _check_garage_async(settings: Settings) -> str:
                 state.last_change_time = now
                 notifier.send_monitor_started()
                 logger.info("First run. Initial status: %s", result.status.value)
-            elif (
-                result.confidence >= settings.confidence_threshold
-                and result.status != state.current_status
-            ):
-                old = state.current_status
-                old_change_time = state.last_change_time
-                state.current_status = result.status
-                state.last_change_time = now
-                state.last_reminder_time = None
-                state.last_final_warning_sent = False
-                if result.status == GarageStatus.OPEN and _is_night_time(now):
-                    notifier.send_night_alert(
-                        confidence=result.confidence,
-                        reasoning=result.reasoning,
-                        photo_bytes=snapshot,
-                    )
-                else:
-                    notifier.send_status_change(
-                        old_status=old.value,
-                        new_status=result.status.value,
-                        confidence=result.confidence,
-                        reasoning=result.reasoning,
-                        photo_bytes=snapshot,
-                    )
-                logger.info("Status changed: %s -> %s", old.value, result.status.value)
-                status_just_changed = True
-
-                # Log event to Firestore
-                duration_seconds = None
-                if result.status == GarageStatus.CLOSED and old_change_time:
-                    duration_seconds = int((now - old_change_time).total_seconds())
-                store.save_event({
-                    "timestamp": now,
-                    "old_status": old.value,
-                    "new_status": result.status.value,
-                    "confidence": result.confidence,
-                    "reasoning": result.reasoning,
-                    "duration_seconds": duration_seconds,
-                    "expire_at": now + timedelta(days=30),
-                })
             elif result.confidence < settings.confidence_threshold:
                 logger.warning(
                     "Low confidence (%.2f < %.2f). Status unchanged.",
                     result.confidence,
                     settings.confidence_threshold,
                 )
+            elif result.status != state.current_status:
+                # Debounce: require consecutive confirmations before changing state
+                if state.pending_status == result.status:
+                    state.pending_count += 1
+                else:
+                    state.pending_status = result.status
+                    state.pending_count = 1
+                logger.info(
+                    "Pending status change: %s -> %s (count=%d/%d)",
+                    state.current_status.value,
+                    result.status.value,
+                    state.pending_count,
+                    STATUS_CHANGE_CONFIRMATIONS,
+                )
+
+                if state.pending_count >= STATUS_CHANGE_CONFIRMATIONS:
+                    old = state.current_status
+                    old_change_time = state.last_change_time
+                    state.current_status = result.status
+                    state.last_change_time = now
+                    state.last_reminder_time = None
+                    state.last_final_warning_sent = False
+                    state.pending_status = None
+                    state.pending_count = 0
+                    if result.status == GarageStatus.OPEN and _is_night_time(now):
+                        notifier.send_night_alert(
+                            confidence=result.confidence,
+                            reasoning=result.reasoning,
+                            photo_bytes=snapshot,
+                        )
+                    else:
+                        notifier.send_status_change(
+                            old_status=old.value,
+                            new_status=result.status.value,
+                            confidence=result.confidence,
+                            reasoning=result.reasoning,
+                            photo_bytes=snapshot,
+                        )
+                    logger.info("Status changed: %s -> %s", old.value, result.status.value)
+                    status_just_changed = True
+
+                    # Log event to Firestore
+                    duration_seconds = None
+                    if result.status == GarageStatus.CLOSED and old_change_time:
+                        duration_seconds = int((now - old_change_time).total_seconds())
+                    store.save_event({
+                        "timestamp": now,
+                        "old_status": old.value,
+                        "new_status": result.status.value,
+                        "confidence": result.confidence,
+                        "reasoning": result.reasoning,
+                        "duration_seconds": duration_seconds,
+                        "expire_at": now + timedelta(days=30),
+                    })
+            else:
+                # Status matches current — reset any pending change
+                if state.pending_status is not None:
+                    logger.info(
+                        "Pending status reset: current=%s confirmed, was pending=%s",
+                        state.current_status.value,
+                        state.pending_status.value,
+                    )
+                    state.pending_status = None
+                    state.pending_count = 0
 
         # Auto-expire mute
         is_muted = state.muted_until is not None and state.muted_until > now

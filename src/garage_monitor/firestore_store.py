@@ -18,6 +18,8 @@ class FirestoreStore:
         if not snap.exists:
             return None
         data = snap.to_dict()
+        pending_raw = data.get("pending_status")
+        pending_status = GarageStatus(pending_raw) if pending_raw else None
         return GarageState(
             current_status=GarageStatus(data["current_status"]),
             last_check_time=data.get("last_check_time"),
@@ -27,6 +29,8 @@ class FirestoreStore:
             last_image_hash=data.get("last_image_hash"),
             muted_until=data.get("muted_until"),
             last_final_warning_sent=data.get("last_final_warning_sent", False),
+            pending_status=pending_status,
+            pending_count=data.get("pending_count", 0),
         )
 
     def save_state(self, state: GarageState) -> None:
@@ -40,6 +44,8 @@ class FirestoreStore:
             "last_image_hash": state.last_image_hash,
             "muted_until": state.muted_until,
             "last_final_warning_sent": state.last_final_warning_sent,
+            "pending_status": state.pending_status.value if state.pending_status else None,
+            "pending_count": state.pending_count,
         })
 
     def get_blink_credentials(self) -> dict | None:

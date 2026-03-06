@@ -28,6 +28,8 @@ class GarageState:
     last_image_hash: str | None = None
     muted_until: datetime | None = None
     last_final_warning_sent: bool = False
+    pending_status: GarageStatus | None = None
+    pending_count: int = 0
 
 
 @dataclass

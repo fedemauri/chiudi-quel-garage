@@ -110,6 +110,7 @@ class TestCheckGarage:
     @patch("garage_monitor.main.TelegramNotifier")
     @patch("garage_monitor.main.FirestoreStore")
     def test_status_change(self, mock_store_cls, mock_tg_cls, mock_gem_cls, mock_blink_cls):
+        """Status change requires debounce: pending_count=1 means this is the 2nd confirmation."""
         now = datetime.now(timezone.utc)
         store, notifier, _, _ = _setup_mocks(
             mock_store_cls, mock_tg_cls, mock_gem_cls, mock_blink_cls,
@@ -117,6 +118,8 @@ class TestCheckGarage:
                 current_status=GarageStatus.CLOSED,
                 last_check_time=now,
                 last_change_time=now,
+                pending_status=GarageStatus.OPEN,
+                pending_count=1,
             ),
             analysis_status=GarageStatus.OPEN,
             analysis_confidence=0.9,
@@ -196,6 +199,70 @@ class TestCheckGarage:
 
         assert result == "ERROR"
         notifier.send_error_alert.assert_called_once()
+
+
+class TestDebounce:
+    @patch("garage_monitor.main.BlinkClient")
+    @patch("garage_monitor.main.GeminiAnalyzer")
+    @patch("garage_monitor.main.TelegramNotifier")
+    @patch("garage_monitor.main.FirestoreStore")
+    def test_single_detection_sets_pending(
+        self, mock_store_cls, mock_tg_cls, mock_gem_cls, mock_blink_cls
+    ):
+        """First detection of a different status sets pending but doesn't change state."""
+        now = datetime.now(timezone.utc)
+        store, notifier, _, _ = _setup_mocks(
+            mock_store_cls, mock_tg_cls, mock_gem_cls, mock_blink_cls,
+            state=GarageState(
+                current_status=GarageStatus.CLOSED,
+                last_check_time=now,
+                last_change_time=now,
+            ),
+            analysis_status=GarageStatus.OPEN,
+            analysis_confidence=0.9,
+            analysis_reasoning="Door raised",
+        )
+
+        result = asyncio.run(_check_garage_async(_make_settings()))
+
+        assert result == "OK"
+        notifier.send_status_change.assert_not_called()
+        saved_state = store.save_state.call_args[0][0]
+        assert saved_state.current_status == GarageStatus.CLOSED
+        assert saved_state.pending_status == GarageStatus.OPEN
+        assert saved_state.pending_count == 1
+
+    @patch("garage_monitor.main.BlinkClient")
+    @patch("garage_monitor.main.GeminiAnalyzer")
+    @patch("garage_monitor.main.TelegramNotifier")
+    @patch("garage_monitor.main.FirestoreStore")
+    def test_oscillation_resets_pending(
+        self, mock_store_cls, mock_tg_cls, mock_gem_cls, mock_blink_cls
+    ):
+        """If current reading matches current_status, pending is reset."""
+        now = datetime.now(timezone.utc)
+        store, notifier, _, _ = _setup_mocks(
+            mock_store_cls, mock_tg_cls, mock_gem_cls, mock_blink_cls,
+            state=GarageState(
+                current_status=GarageStatus.CLOSED,
+                last_check_time=now,
+                last_change_time=now,
+                pending_status=GarageStatus.OPEN,
+                pending_count=1,
+            ),
+            analysis_status=GarageStatus.CLOSED,
+            analysis_confidence=0.98,
+            analysis_reasoning="Door closed",
+        )
+
+        result = asyncio.run(_check_garage_async(_make_settings()))
+
+        assert result == "OK"
+        notifier.send_status_change.assert_not_called()
+        saved_state = store.save_state.call_args[0][0]
+        assert saved_state.current_status == GarageStatus.CLOSED
+        assert saved_state.pending_status is None
+        assert saved_state.pending_count == 0
 
 
 class TestImageHashSkip:
@@ -400,6 +467,8 @@ class TestStillOpenReminder:
                 last_check_time=now - timedelta(minutes=5),
                 last_change_time=now - timedelta(minutes=20),
                 last_reminder_time=now - timedelta(minutes=5),
+                pending_status=GarageStatus.CLOSED,
+                pending_count=1,
             ),
             analysis_status=GarageStatus.CLOSED,
             analysis_confidence=0.95,
@@ -655,6 +724,8 @@ class TestNightAlert:
                 current_status=GarageStatus.CLOSED,
                 last_check_time=now,
                 last_change_time=now,
+                pending_status=GarageStatus.OPEN,
+                pending_count=1,
             ),
             analysis_status=GarageStatus.OPEN,
             analysis_confidence=0.9,
@@ -686,6 +757,8 @@ class TestNightAlert:
                 current_status=GarageStatus.CLOSED,
                 last_check_time=now,
                 last_change_time=now,
+                pending_status=GarageStatus.OPEN,
+                pending_count=1,
             ),
             analysis_status=GarageStatus.OPEN,
             analysis_confidence=0.9,
@@ -778,6 +851,8 @@ class TestFinalWarning:
                 last_change_time=now - timedelta(minutes=70),
                 last_reminder_time=now - timedelta(minutes=20),
                 last_final_warning_sent=True,
+                pending_status=GarageStatus.CLOSED,
+                pending_count=1,
             ),
             analysis_status=GarageStatus.CLOSED,
             analysis_confidence=0.95,
@@ -807,6 +882,8 @@ class TestEventHistory:
                 current_status=GarageStatus.CLOSED,
                 last_check_time=now,
                 last_change_time=now - timedelta(minutes=30),
+                pending_status=GarageStatus.OPEN,
+                pending_count=1,
             ),
             analysis_status=GarageStatus.OPEN,
             analysis_confidence=0.9,
@@ -840,6 +917,8 @@ class TestEventHistory:
                 current_status=GarageStatus.OPEN,
                 last_check_time=now - timedelta(minutes=5),
                 last_change_time=now - timedelta(minutes=30),
+                pending_status=GarageStatus.CLOSED,
+                pending_count=1,
             ),
             analysis_status=GarageStatus.CLOSED,
             analysis_confidence=0.95,
@@ -870,6 +949,8 @@ class TestEventHistory:
                 current_status=GarageStatus.CLOSED,
                 last_check_time=now,
                 last_change_time=now,
+                pending_status=GarageStatus.OPEN,
+                pending_count=1,
             ),
             analysis_status=GarageStatus.OPEN,
             analysis_confidence=0.9,

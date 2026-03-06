@@ -34,15 +34,32 @@ OPEN — il varco è libero, la porta è retratta:
   - Il varco mostra un'apertura ampia: si vede rampa, esterno, pergola, cielo
   - Anche parzialmente aperta (pannelli a metà, varco parziale in basso) = OPEN
 
+FALSI POSITIVI DA EVITARE (IMPORTANTE):
+  - Le GUIDE LATERALI (binari curvi metallici) sui lati destro e sinistro della porta
+    creano un gap/striscia scura tra il bordo dei pannelli e il muro. Questo è NORMALE
+    a porta chiusa e NON indica apertura.
+  - Una striscia scura verticale lungo il BORDO laterale della porta = guida, NON apertura.
+  - "Non completamente sigillata sul lato" = è la guida laterale = CLOSED.
+  - OPEN significa che il VARCO CENTRALE è libero e si vede l'ESTERNO (rampa, cielo, strada).
+
 COME DISTINGUERE (la regola fondamentale):
-  Guarda il VARCO della porta (la zona rettangolare al centro dell'immagine).
+  Guarda SOLO il VARCO CENTRALE della porta (ignora i bordi laterali).
   → Se è coperto da pannelli piatti verticali con linee orizzontali → CLOSED
-  → Se mostra un'apertura (totale o parziale) verso l'esterno → OPEN
+  → Se mostra un'apertura AMPIA verso l'esterno (non una fessura laterale) → OPEN
   Nel dubbio → CLOSED.
 
-Rispondi SOLO in JSON: {"status": "open"|"closed", "confidence": 0.0-1.0, "reasoning": "..."}
-Il campo reasoning deve essere in italiano, massimo 10 parole.
+Rispondi in JSON. Il campo reasoning deve essere in italiano, massimo 10 parole.
 Se l'immagine è troppo ambigua, imposta confidence sotto 0.5."""
+
+RESPONSE_SCHEMA = types.Schema(
+    type="OBJECT",
+    required=["status", "confidence", "reasoning"],
+    properties={
+        "status": types.Schema(type="STRING", enum=["open", "closed"]),
+        "confidence": types.Schema(type="NUMBER"),
+        "reasoning": types.Schema(type="STRING"),
+    },
+)
 
 
 class GeminiAnalyzer:
@@ -83,7 +100,8 @@ class GeminiAnalyzer:
             ],
             config=types.GenerateContentConfig(
                 response_mime_type="application/json",
-                temperature=0.1,
+                response_schema=RESPONSE_SCHEMA,
+                temperature=0.0,
             ),
         )
 
