@@ -10,6 +10,7 @@ from garage_monitor.blink_client import BlinkAuthExpiredError, BlinkClient
 from garage_monitor.config import Settings
 from garage_monitor.firestore_store import FirestoreStore
 from garage_monitor.gemini_analyzer import GeminiAnalyzer, GeminiParseError
+from garage_monitor.tflite_analyzer import TFLiteAnalyzer
 from garage_monitor.models import GarageState, GarageStatus
 from garage_monitor.telegram_notifier import TelegramNotifier
 
@@ -33,7 +34,10 @@ def _is_night_time(utc_now: datetime) -> bool:
 async def _check_garage_async(settings: Settings) -> str:
     store = FirestoreStore(settings.gcp_project_id, settings.firestore_collection)
     notifier = TelegramNotifier(settings.telegram_bot_token, settings.telegram_chat_id)
-    analyzer = GeminiAnalyzer(settings.gemini_api_key, settings.gemini_model)
+    if settings.analyzer == "tflite":
+        analyzer = TFLiteAnalyzer()
+    else:
+        analyzer = GeminiAnalyzer(settings.gemini_api_key, settings.gemini_model)
 
     state = store.get_state()
     first_run = state is None
@@ -68,22 +72,22 @@ async def _check_garage_async(settings: Settings) -> str:
 
         # Skip Gemini se immagine identica (byte per byte)
         current_hash = hashlib.md5(snapshot).hexdigest()
-        skip_gemini = (
+        skip_analysis = (
             not first_run
             and state.last_image_hash is not None
             and current_hash == state.last_image_hash
         )
 
         state.last_check_time = now
-        gemini_called = False
+        analyzer_called = False
         status_just_changed = False
 
-        if skip_gemini:
-            logger.info("Immagine identica (hash=%s), skip Gemini", current_hash)
+        if skip_analysis:
+            logger.info("Immagine identica (hash=%s), skip analisi", current_hash)
             state.consecutive_errors = 0
         else:
             result = analyzer.analyze(snapshot)
-            gemini_called = True
+            analyzer_called = True
             state.consecutive_errors = 0
             state.last_image_hash = current_hash
             logger.info(
@@ -208,7 +212,7 @@ async def _check_garage_async(settings: Settings) -> str:
             firestore_reads=2,
             firestore_writes=3,
         )
-        if gemini_called:
+        if analyzer_called and result.input_tokens > 0:
             usage.update(
                 gemini_calls=1,
                 gemini_input_tokens=result.input_tokens,

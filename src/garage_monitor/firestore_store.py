@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from google.cloud.firestore_v1 import Client as FirestoreClient
 from google.cloud.firestore_v1.transforms import Increment
 from datetime import datetime, timezone

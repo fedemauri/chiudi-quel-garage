@@ -14,6 +14,7 @@ def _make_settings(**overrides):
         "blink_username": "test@test.com",
         "blink_password": "pass",
         "blink_camera_name": "Garage",
+        "analyzer": "gemini",
         "gemini_api_key": "fake-key",
         "gemini_model": "gemini-2.5-flash",
         "confidence_threshold": 0.7,
@@ -189,13 +190,17 @@ class TestCommands:
 
     @patch("garage_monitor.main.TelegramNotifier")
     @patch("garage_monitor.main.FirestoreStore")
-    def test_report_command(self, mock_store_cls, mock_tg_cls):
-        """_cmd_report delegates to main._send_usage_report, so mock at main module level."""
+    @patch("garage_monitor.telegram_handler.TelegramNotifier")
+    @patch("garage_monitor.telegram_handler.FirestoreStore")
+    def test_report_command(self, mock_handler_store_cls, mock_handler_tg_cls, mock_main_store_cls, mock_main_tg_cls):
+        """_cmd_report delegates to main._send_usage_report, so mock at both module levels."""
         store = MagicMock()
         store.get_usage_stats.return_value = UsageStats(period="2026_03")
-        mock_store_cls.return_value = store
+        mock_main_store_cls.return_value = store
+        mock_handler_store_cls.return_value = MagicMock()
         notifier = MagicMock()
-        mock_tg_cls.return_value = notifier
+        mock_main_tg_cls.return_value = notifier
+        mock_handler_tg_cls.return_value = MagicMock()
 
         result = handle_command({"message": {"text": "/report"}}, _make_settings())
 

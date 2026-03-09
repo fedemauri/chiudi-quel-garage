@@ -27,6 +27,7 @@ def _make_settings(**overrides):
         "blink_username": "test@test.com",
         "blink_password": "pass",
         "blink_camera_name": "Garage",
+        "analyzer": "gemini",
         "gemini_api_key": "fake-key",
         "gemini_model": "gemini-2.5-flash",
         "confidence_threshold": 0.7,
@@ -105,11 +106,12 @@ class TestCheckGarage:
         store.save_state.assert_called_once()
         store.save_blink_credentials.assert_called_once()
 
+    @patch("garage_monitor.main._is_night_time", return_value=False)
     @patch("garage_monitor.main.BlinkClient")
     @patch("garage_monitor.main.GeminiAnalyzer")
     @patch("garage_monitor.main.TelegramNotifier")
     @patch("garage_monitor.main.FirestoreStore")
-    def test_status_change(self, mock_store_cls, mock_tg_cls, mock_gem_cls, mock_blink_cls):
+    def test_status_change(self, mock_store_cls, mock_tg_cls, mock_gem_cls, mock_blink_cls, _mock_night):
         """Status change requires debounce: pending_count=1 means this is the 2nd confirmation."""
         now = datetime.now(timezone.utc)
         store, notifier, _, _ = _setup_mocks(
@@ -199,6 +201,25 @@ class TestCheckGarage:
 
         assert result == "ERROR"
         notifier.send_error_alert.assert_called_once()
+
+
+    @patch("garage_monitor.main.BlinkClient")
+    @patch("garage_monitor.main.TFLiteAnalyzer")
+    @patch("garage_monitor.main.TelegramNotifier")
+    @patch("garage_monitor.main.FirestoreStore")
+    def test_tflite_analyzer_used_when_configured(
+        self, mock_store_cls, mock_tg_cls, mock_tflite_cls, mock_blink_cls
+    ):
+        """When analyzer=tflite, TFLiteAnalyzer is used instead of GeminiAnalyzer."""
+        store, notifier, _, _ = _setup_mocks(
+            mock_store_cls, mock_tg_cls, mock_tflite_cls, mock_blink_cls
+        )
+
+        result = asyncio.run(_check_garage_async(_make_settings(analyzer="tflite")))
+
+        assert result == "OK"
+        mock_tflite_cls.assert_called_once()
+        notifier.send_monitor_started.assert_called_once()
 
 
 class TestDebounce:
@@ -574,6 +595,14 @@ class TestUsageReport:
                 last_check_time=now,
                 last_change_time=now,
             ),
+        )
+        # Set non-zero tokens so Gemini usage is tracked
+        mock_gem_cls.return_value.analyze.return_value = GeminiAnalysisResult(
+            status=GarageStatus.CLOSED,
+            confidence=0.95,
+            reasoning="Door closed",
+            input_tokens=100,
+            output_tokens=20,
         )
 
         result = asyncio.run(_check_garage_async(_make_settings()))

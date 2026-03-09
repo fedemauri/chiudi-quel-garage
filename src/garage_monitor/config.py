@@ -7,7 +7,8 @@ class Settings(BaseSettings):
     blink_username: str
     blink_password: str
     blink_camera_name: str = "Garage"
-    gemini_api_key: str
+    analyzer: str = "gemini"  # "gemini" or "tflite"
+    gemini_api_key: str = ""
     gemini_model: str = "gemini-2.5-flash"
     confidence_threshold: float = 0.7
     telegram_bot_token: str

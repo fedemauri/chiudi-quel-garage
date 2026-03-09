@@ -4,6 +4,8 @@ Uses the blinkpy library to connect to Blink cameras without interactive 2FA,
 leveraging credentials previously saved to Firestore during initial setup.
 """
 
+from __future__ import annotations
+
 import asyncio
 import logging
 
