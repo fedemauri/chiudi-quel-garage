@@ -1,5 +1,4 @@
 import asyncio
-import hashlib
 import logging
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
@@ -22,7 +21,6 @@ REMINDER_INTERVAL_MINUTES = 15
 MAX_REMINDER_MINUTES = 60
 STALENESS_MARGIN_DAY = 12
 STALENESS_MARGIN_NIGHT = 20
-STATUS_CHANGE_CONFIRMATIONS = 2
 ROME_TZ = ZoneInfo("Europe/Rome")
 
 
@@ -70,108 +68,66 @@ async def _check_garage_async(settings: Settings) -> str:
         snapshot = await blink.take_snapshot(settings.blink_camera_name)
         updated_creds = blink.get_updated_credentials()
 
-        # Skip Gemini se immagine identica (byte per byte)
-        current_hash = hashlib.md5(snapshot).hexdigest()
-        skip_analysis = (
-            not first_run
-            and state.last_image_hash is not None
-            and current_hash == state.last_image_hash
-        )
-
         state.last_check_time = now
-        analyzer_called = False
         status_just_changed = False
 
-        if skip_analysis:
-            logger.info("Immagine identica (hash=%s), skip analisi", current_hash)
-            state.consecutive_errors = 0
-        else:
-            result = analyzer.analyze(snapshot)
-            analyzer_called = True
-            state.consecutive_errors = 0
-            state.last_image_hash = current_hash
-            logger.info(
-                "Analysis: status=%s confidence=%.2f reasoning=%s",
-                result.status.value,
+        result = analyzer.analyze(snapshot)
+        state.consecutive_errors = 0
+        logger.info(
+            "Analysis: status=%s confidence=%.2f reasoning=%s",
+            result.status.value,
+            result.confidence,
+            result.reasoning,
+        )
+
+        if first_run:
+            state.current_status = result.status
+            state.last_change_time = now
+            notifier.send_monitor_started()
+            logger.info("First run. Initial status: %s", result.status.value)
+        elif result.confidence < settings.confidence_threshold:
+            logger.warning(
+                "Low confidence (%.2f < %.2f). Status unchanged.",
                 result.confidence,
-                result.reasoning,
+                settings.confidence_threshold,
             )
-
-            if first_run:
-                state.current_status = result.status
-                state.last_change_time = now
-                notifier.send_monitor_started()
-                logger.info("First run. Initial status: %s", result.status.value)
-            elif result.confidence < settings.confidence_threshold:
-                logger.warning(
-                    "Low confidence (%.2f < %.2f). Status unchanged.",
-                    result.confidence,
-                    settings.confidence_threshold,
+        elif result.status != state.current_status:
+            old = state.current_status
+            old_change_time = state.last_change_time
+            state.current_status = result.status
+            state.last_change_time = now
+            state.last_reminder_time = None
+            state.last_final_warning_sent = False
+            if result.status == GarageStatus.OPEN and _is_night_time(now):
+                notifier.send_night_alert(
+                    confidence=result.confidence,
+                    reasoning=result.reasoning,
+                    photo_bytes=snapshot,
                 )
-            elif result.status != state.current_status:
-                # Debounce: require consecutive confirmations before changing state
-                if state.pending_status == result.status:
-                    state.pending_count += 1
-                else:
-                    state.pending_status = result.status
-                    state.pending_count = 1
-                logger.info(
-                    "Pending status change: %s -> %s (count=%d/%d)",
-                    state.current_status.value,
-                    result.status.value,
-                    state.pending_count,
-                    STATUS_CHANGE_CONFIRMATIONS,
-                )
-
-                if state.pending_count >= STATUS_CHANGE_CONFIRMATIONS:
-                    old = state.current_status
-                    old_change_time = state.last_change_time
-                    state.current_status = result.status
-                    state.last_change_time = now
-                    state.last_reminder_time = None
-                    state.last_final_warning_sent = False
-                    state.pending_status = None
-                    state.pending_count = 0
-                    if result.status == GarageStatus.OPEN and _is_night_time(now):
-                        notifier.send_night_alert(
-                            confidence=result.confidence,
-                            reasoning=result.reasoning,
-                            photo_bytes=snapshot,
-                        )
-                    else:
-                        notifier.send_status_change(
-                            old_status=old.value,
-                            new_status=result.status.value,
-                            confidence=result.confidence,
-                            reasoning=result.reasoning,
-                            photo_bytes=snapshot,
-                        )
-                    logger.info("Status changed: %s -> %s", old.value, result.status.value)
-                    status_just_changed = True
-
-                    # Log event to Firestore
-                    duration_seconds = None
-                    if result.status == GarageStatus.CLOSED and old_change_time:
-                        duration_seconds = int((now - old_change_time).total_seconds())
-                    store.save_event({
-                        "timestamp": now,
-                        "old_status": old.value,
-                        "new_status": result.status.value,
-                        "confidence": result.confidence,
-                        "reasoning": result.reasoning,
-                        "duration_seconds": duration_seconds,
-                        "expire_at": now + timedelta(days=30),
-                    })
             else:
-                # Status matches current — reset any pending change
-                if state.pending_status is not None:
-                    logger.info(
-                        "Pending status reset: current=%s confirmed, was pending=%s",
-                        state.current_status.value,
-                        state.pending_status.value,
-                    )
-                    state.pending_status = None
-                    state.pending_count = 0
+                notifier.send_status_change(
+                    old_status=old.value,
+                    new_status=result.status.value,
+                    confidence=result.confidence,
+                    reasoning=result.reasoning,
+                    photo_bytes=snapshot,
+                )
+            logger.info("Status changed: %s -> %s", old.value, result.status.value)
+            status_just_changed = True
+
+            # Log event to Firestore
+            duration_seconds = None
+            if result.status == GarageStatus.CLOSED and old_change_time:
+                duration_seconds = int((now - old_change_time).total_seconds())
+            store.save_event({
+                "timestamp": now,
+                "old_status": old.value,
+                "new_status": result.status.value,
+                "confidence": result.confidence,
+                "reasoning": result.reasoning,
+                "duration_seconds": duration_seconds,
+                "expire_at": now + timedelta(days=30),
+            })
 
         # Auto-expire mute
         is_muted = state.muted_until is not None and state.muted_until > now
@@ -212,7 +168,7 @@ async def _check_garage_async(settings: Settings) -> str:
             firestore_reads=2,
             firestore_writes=3,
         )
-        if analyzer_called and result.input_tokens > 0:
+        if result.input_tokens > 0:
             usage.update(
                 gemini_calls=1,
                 gemini_input_tokens=result.input_tokens,
