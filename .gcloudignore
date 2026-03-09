@@ -12,6 +12,9 @@ PLAN.md
 README.md
 pyproject.toml
 .venv/
+.venv-train/
+data/
+model/*.keras
 .pytest_cache/
 .idea/
 .vscode/

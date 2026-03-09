@@ -22,32 +22,17 @@ import cv2
 import numpy as np
 
 # ── Sample images with ground truth ──────────────────────────────────
-BOX = Path.home() / "Downloads/box/converted"
-DL = Path.home() / "Downloads/box/converted"
+# Images are loaded from data/images/{open,closed}/ directory structure.
+DATA_DIR = Path(__file__).resolve().parent.parent / "data/images"
+IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 
-SAMPLES = [
-    # Original test set
-    (DL / "IMG_6518.JPG", "open"),   # IR night, open
-    (DL / "IMG_6533.JPG", "open"),   # Day, open, no car
-    (DL / "IMG_6532.JPG", "open"),   # Day, partially open
-    (DL / "IMG_6531.JPG", "closed"), # IR night, closed
-    (DL / "IMG_6530.JPG", "open"),   # Day, open, car
-    (DL / "IMG_6529.JPG", "open"),   # Dusk, open
-    (DL / "IMG_6528.JPG", "closed"), # IR night, closed, car
-
-    # image_* series: IR night — closed(1-6), open(7-45), closed(46-49)
-    *[(BOX / f"image_{i:02d}.jpg", "closed") for i in range(1, 7)],
-    *[(BOX / f"image_{i:02d}.jpg", "open") for i in range(7, 46)],
-    *[(BOX / f"image_{i:02d}.jpg", "closed") for i in range(46, 50)],
-
-    # image2_* series: night with light — open(1-17), closed(18-23), open(24-39)
-    *[(BOX / f"image2_{i}.jpg", "open") for i in range(1, 18)],
-    *[(BOX / f"image2_{i}.jpg", "closed") for i in range(18, 24)],
-    *[(BOX / f"image2_{i}.jpg", "open") for i in range(24, 40)],
-
-    # Extra
-    (BOX / "IMG_6535.JPG", "open"),
-]
+SAMPLES = []
+for class_name in ("open", "closed"):
+    class_dir = DATA_DIR / class_name
+    if class_dir.exists():
+        for p in sorted(class_dir.iterdir()):
+            if p.suffix.lower() in IMAGE_EXTS:
+                SAMPLES.append((p, class_name))
 
 # ── ROI: central portion of the image where the door is ─────────────
 # Expressed as fractions of image width/height.

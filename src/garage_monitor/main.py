@@ -48,7 +48,7 @@ async def _check_garage_async(settings: Settings) -> str:
 
     # Staleness detection: alert if last check is older than expected
     if not first_run and state.last_check_time is not None:
-        margin = STALENESS_MARGIN_NIGHT if _is_night_time(now) else STALENESS_MARGIN_DAY
+        margin = STALENESS_MARGIN_NIGHT if _is_night_time(state.last_check_time) else STALENESS_MARGIN_DAY
         elapsed_minutes = (now - state.last_check_time).total_seconds() / 60
         if elapsed_minutes > margin:
             notifier.send_error_alert(
