@@ -1,6 +1,6 @@
 # Chiudi Quel Garage!
 
-An automated garage door monitoring system that uses a **Blink Mini** indoor camera and **Google Gemini AI** vision to detect whether a garage door is open or closed. When the state changes, the system sends a **Telegram notification with a photo**. If the door stays open, periodic reminders are sent. Everything runs serverless on **Google Cloud Platform**.
+An automated garage door monitoring system that uses a **Blink Mini** indoor camera and AI vision to detect whether a garage door is open or closed. Two analyzer backends are available: **Google Gemini AI** (cloud, paid) and a **local TFLite MobileNetV2 classifier** (free, fast). When the state changes, the system sends a **Telegram notification with a photo**. If the door stays open, periodic reminders are sent. Everything runs serverless on **Google Cloud Platform**.
 
 ## How It Works
 
@@ -8,13 +8,14 @@ The system is built around a single Google Cloud Function that executes the foll
 
 1. **Read state** — Fetches the current garage status and Blink credentials from Firestore.
 2. **Capture snapshot** — Authenticates with the Blink API using stored credentials (no 2FA required after initial setup) and commands the camera to take a fresh JPEG snapshot.
-3. **Image deduplication** — Computes an MD5 hash of the snapshot and compares it with the previously stored hash. If the image is byte-for-byte identical (common at night when nothing moves), the Gemini API call is skipped entirely to save cost.
-4. **AI analysis** — Sends the JPEG image to Gemini along with a detailed prompt describing the specific camera's perspective (fixed indoor camera looking at a sectional garage door). Gemini returns a structured JSON response with `status` (open/closed), `confidence` (0.0–1.0), and `reasoning` (short text in Italian).
-5. **State change detection** — If the AI classification differs from the stored state *and* the confidence exceeds the configured threshold (default 0.7), the system records a state change.
-6. **Telegram notification** — On state change, sends a Telegram message with the snapshot photo, the old and new status, confidence score, and Gemini's reasoning. On first run, sends a "monitor started" confirmation.
-7. **Open-door reminders** — If the door has been open for more than 15 minutes, sends a reminder with photo every 15 minutes, up to a maximum of 60 minutes.
-8. **Persist state** — Saves the updated garage state, refreshed Blink credentials, and increments usage counters in Firestore.
-9. **Error handling** — Tracks consecutive errors. After 3 consecutive failures, sends a Telegram alert. Specific errors (expired Blink auth, camera not found, unparseable Gemini response) trigger immediate targeted alerts.
+3. **AI analysis** — The JPEG snapshot is sent to the configured analyzer backend (`GM_ANALYZER`):
+   - **Gemini** (default): the image is sent to the Gemini cloud API with a detailed Italian prompt describing the camera's perspective. Gemini returns a structured JSON with `status` (open/closed), `confidence` (0.0–1.0), and `reasoning` (Italian text). Temperature is set to 0.0 for deterministic output. Cost: ~$0.30/M input tokens + $2.50/M output tokens.
+   - **TFLite** (alternative): a pre-trained MobileNetV2 binary classifier (`model/garage_classifier.tflite`, 4.4 MB) runs locally on the Cloud Function CPU. The image is resized to 224×224, normalized to [0, 1], and fed through the model. The output is a single float (0=closed, 1=open) mapped to the same `GeminiAnalysisResult` format. Inference takes ~50–100 ms with zero API cost. See [TFLite Model](docs/TFLITE_MODEL.md) for full architecture and training details.
+4. **State change detection** — If the AI classification differs from the stored state *and* the confidence exceeds the configured threshold (default 0.7), the system records a state change.
+5. **Telegram notification** — On state change, sends a Telegram message with the snapshot photo, the old and new status, confidence score, and the analyzer's reasoning. On first run, sends a "monitor started" confirmation.
+6. **Open-door reminders** — If the door has been open for more than 15 minutes, sends a reminder with photo every 15 minutes, up to a maximum of 60 minutes.
+7. **Persist state** — Saves the updated garage state, refreshed Blink credentials, and increments usage counters in Firestore.
+8. **Error handling** — Tracks consecutive errors. After 3 consecutive failures, sends a Telegram alert. Specific errors (expired Blink auth, camera not found, unparseable Gemini response) trigger immediate targeted alerts.
 
 ## Architecture
 
@@ -26,11 +27,11 @@ Cloud Scheduler
   |-- garage-report-trigger: 0 21 * * *       (daily at 9 PM)
   |
   v
-Google Cloud Function "check-garage" (Python 3.12, gen2, 256 MB, 120s timeout)
+Google Cloud Function "check-garage" (Python 3.12, gen2, 512 MB, 120s timeout)
   |
   +---> Firestore (collection: garage_monitor)
   |       - doc "state": current_status, last_check_time, last_change_time,
-  |                       consecutive_errors, last_reminder_time, last_image_hash,
+  |                       consecutive_errors, last_reminder_time,
   |                       muted_until, last_final_warning_sent
   |       - doc "blink_credentials": login_attributes (auto-refreshed tokens)
   |       - doc "usage_stats_YYYY_MM": monthly invocation/token/cost counters
@@ -41,13 +42,18 @@ Google Cloud Function "check-garage" (Python 3.12, gen2, 256 MB, 120s timeout)
   |       - snap_picture() -> 3s wait -> refresh() -> read cached JPEG
   |       - Updated tokens saved back to Firestore after each call
   |
-  +---> Gemini API (via google-genai SDK)
+  +---> Analyzer (configurable via GM_ANALYZER)
+  |       Option A — Gemini API (default, via google-genai SDK):
   |       - Model: gemini-2.5-flash (configurable)
   |       - Input: JPEG image + structured Italian prompt
   |       - Output: JSON {status, confidence, reasoning}
-  |       - Temperature: 0.1 (near-deterministic)
+  |       - Temperature: 0.0 (deterministic)
   |       - Response MIME type forced to application/json
-  |       - Skipped when image hash matches previous (cost optimization)
+  |       Option B — TFLite (local, via ai-edge-litert):
+  |       - MobileNetV2 transfer learning, 4.4 MB model
+  |       - Input: JPEG resized to 224x224
+  |       - Output: open probability 0.0-1.0
+  |       - Inference: ~50-100ms, no network call, no cost
   |
   +---> Telegram Bot API (via httpx)
   |       - Status change notifications (with photo)
@@ -66,7 +72,7 @@ Timezone: Europe/Rome (all scheduler cron expressions)
 
 ## Cost Breakdown
 
-The only paid service is the **Gemini API**. All GCP infrastructure components fit within the free tier, Blink cloud API has no per-call charges, and the Telegram Bot API is free.
+The only paid service is the **Gemini API** — and it is only used when `GM_ANALYZER=gemini` (the default). When using the **TFLite** local model (`GM_ANALYZER=tflite`), there are zero API costs. All GCP infrastructure components fit within the free tier, Blink cloud API has no per-call charges, and the Telegram Bot API is free.
 
 ### Scheduled invocations per month
 
@@ -77,9 +83,9 @@ The only paid service is the **Gemini API**. All GCP infrastructure components f
 | Usage report (21:00) | once daily | 1 | ~30 |
 | **Total** | | **233** | **~6,990** |
 
-### Gemini API cost (the only paid component)
+### Gemini API cost (only when GM_ANALYZER=gemini)
 
-Not every invocation calls Gemini. The system computes an MD5 hash of each snapshot and skips the API call when the image is identical to the previous one. This is common at night (static IR image of a closed door) and during long periods with no movement. In practice, the skip rate is typically 40–70%, reducing actual Gemini calls to roughly **2,000–4,000/month**.
+> **Tip:** If you switch to `GM_ANALYZER=tflite`, this entire section does not apply — the local model runs on-device at zero cost. See [TFLite Model](docs/TFLITE_MODEL.md) for details.
 
 Gemini 2.5 Flash paid tier pricing (Standard, per million tokens):
 
@@ -90,12 +96,12 @@ Gemini 2.5 Flash paid tier pricing (Standard, per million tokens):
 
 Each call sends a JPEG image (~250–800 image tokens depending on resolution) plus the text prompt (~200 tokens). The output is a small JSON object (~30–50 tokens). Note: Gemini 2.5 Flash is a "thinking" model — output token count includes internal reasoning tokens, which can add overhead beyond the visible JSON response.
 
-Estimated monthly cost with ~3,000 actual Gemini calls:
-- Input: ~3,000 calls x ~500 tokens = ~1.5M tokens x $0.30/M = **~$0.45**
-- Output: ~3,000 calls x ~40 visible tokens (+ thinking overhead) = ~0.12–0.5M tokens x $2.50/M = **~$0.30–1.25**
-- **Total Gemini cost: ~$0.75–1.70/month**
+With ~7,000 scheduled invocations/month, all calling Gemini:
+- Input: ~7,000 calls x ~500 tokens = ~3.5M tokens x $0.30/M = **~$1.05**
+- Output: ~7,000 calls x ~40 visible tokens (+ thinking overhead) = ~0.28–1.5M tokens x $2.50/M = **~$0.70–3.75**
+- **Total Gemini cost: ~$1.75–4.80/month**
 
-With aggressive image dedup (e.g., garage door rarely moves, fewer actual calls): can be lower. The daily usage report tracks actual token consumption so you can monitor real costs.
+The daily usage report tracks actual token consumption so you can monitor real costs.
 
 ### GCP infrastructure (free tier)
 
@@ -137,7 +143,9 @@ The `setup_gcp.sh` script enables all required Google Cloud APIs and creates the
 
 APIs enabled: Cloud Functions, Cloud Scheduler, Firestore, Cloud Run, Cloud Build, Artifact Registry.
 
-### Step 2 — Gemini API Key
+### Step 2 — Gemini API Key (skip if using TFLite)
+
+> If you plan to use `GM_ANALYZER=tflite` (the local MobileNetV2 classifier), you can skip this step entirely — no API key is needed.
 
 1. Go to [Google AI Studio](https://aistudio.google.com/apikey)
 2. Create a new API key
@@ -164,7 +172,8 @@ Edit `.env` and fill in all values. Every variable uses the `GM_` prefix:
 | `GM_BLINK_USERNAME` | yes | — | Email address of your Blink account |
 | `GM_BLINK_PASSWORD` | yes | — | Password of your Blink account |
 | `GM_BLINK_CAMERA_NAME` | no | `Garage` | Exact camera name as displayed in the Blink app |
-| `GM_GEMINI_API_KEY` | yes | — | API key from Google AI Studio |
+| `GM_ANALYZER` | no | `gemini` | Analyzer backend: `gemini` (cloud AI, paid) or `tflite` (local MobileNetV2, free). See [TFLite Model](docs/TFLITE_MODEL.md) |
+| `GM_GEMINI_API_KEY` | conditional | — | API key from Google AI Studio. Required only when `GM_ANALYZER=gemini` |
 | `GM_GEMINI_MODEL` | no | `gemini-2.5-flash` | Gemini model identifier. Can be changed to a cheaper/faster model |
 | `GM_CONFIDENCE_THRESHOLD` | no | `0.7` | Minimum confidence (0.0–1.0) required to accept a state change. Lower = more sensitive, higher = fewer false positives |
 | `GM_TELEGRAM_BOT_TOKEN` | yes | — | Bot token from BotFather |
@@ -211,7 +220,7 @@ The `deploy.sh` script performs a complete deployment:
 What it does:
 1. Loads variables from `.env`
 2. Validates all required variables are set
-3. Deploys the Cloud Function (`check-garage`, gen2, `europe-west1`, 256 MB RAM, 120s timeout, HTTP trigger, `--allow-unauthenticated` for Telegram webhook access)
+3. Deploys the Cloud Function (`check-garage`, gen2, `europe-west1`, 512 MB RAM, 120s timeout, HTTP trigger, `--allow-unauthenticated` for Telegram webhook access)
 4. Cleans up any legacy scheduler jobs
 5. Creates three Cloud Scheduler jobs:
    - `garage-monitor-day`: every 5 minutes from 7:00 to 23:59 (Europe/Rome)
@@ -317,20 +326,28 @@ src/garage_monitor/
     __init__.py
     main.py              — Cloud Function entry point: check_garage(request)
                            Routes between: Telegram webhook, ?action=report, and normal check
-                           Orchestrates the full pipeline (Blink -> Gemini -> Telegram)
+                           Orchestrates the full pipeline (Blink -> Analyzer -> Telegram)
     config.py            — Settings class (pydantic-settings, GM_ env prefix)
     blink_client.py      — Async Blink camera client (auth, snapshot, credential refresh)
     gemini_analyzer.py   — Gemini image analysis (structured prompt, JSON response parsing)
+    tflite_analyzer.py   — Local TFLite MobileNetV2 classifier (alternative to Gemini)
     firestore_store.py   — Firestore persistence (state, credentials, usage counters, events)
     telegram_notifier.py — Telegram Bot API client (notifications, reminders, alerts, reports, bot responses)
     telegram_handler.py  — Interactive bot command handler (/stato, /foto, /muto, /smuto, /storico, /report)
     models.py            — Data models: GarageStatus (enum), GarageState, GeminiAnalysisResult, UsageStats
+
+model/
+    garage_classifier.tflite  — Pre-trained MobileNetV2 classifier (4.4 MB, float16 quantized)
+    garage_classifier.keras   — Keras checkpoint for retraining
 
 scripts/
     setup_gcp.sh              — One-time GCP setup (enable APIs, create Firestore DB, TTL policy)
     setup_blink.py            — Interactive Blink 2FA authentication, saves credentials to Firestore
     test_telegram.py          — Verify Telegram bot token and chat ID
     setup_telegram_webhook.py — Register/delete Telegram webhook for bot commands
+    train_model.py            — TFLite model training pipeline (MobileNetV2 transfer learning)
+    compare_models.py         — Compare multiple Gemini models on test images
+    test_heuristic.py         — Heuristic-based garage door detection test
 
 tests/
     test_main.py              — Tests for main orchestration (staleness, night alerts, final warning, events)
@@ -340,6 +357,7 @@ tests/
 
 docs/
     SETUP_BOT.md       — Post-deploy guide for Telegram bot setup and troubleshooting
+    TFLITE_MODEL.md    — TFLite model architecture, training data, retraining guide
 
 deploy.sh              — Full deployment script (Cloud Function + Scheduler jobs)
 pyproject.toml         — Python project config (dependencies, pytest settings)
@@ -356,8 +374,8 @@ pyproject.toml         — Python project config (dependencies, pytest settings)
 | Telegram alert: "N errori consecutivi" | 3+ consecutive failures of any kind | Check logs with `gcloud functions logs read` for the root cause |
 | No notifications at all | Bot token or chat ID incorrect | Run `python scripts/test_telegram.py` to verify |
 | Confidence always below threshold | Poor lighting or camera angle | Ensure the camera is inside the garage, centered on the door. Check IR mode at night |
-| Gemini never called (logs show "skip Gemini") | Image dedup — camera returns identical bytes | Normal behavior when nothing changes. Will resume when the scene changes |
 | Cloud Function timeout | Blink API slow to respond | The function has a 120s timeout. If persistent, check Blink service status |
+| TFLite model misclassifies | Camera moved or new lighting condition | Retrain the model — see [TFLite Model](docs/TFLITE_MODEL.md) retraining instructions |
 | Bot commands not working | Webhook not registered or secret mismatch | Run `setup_telegram_webhook.py` with correct `GM_TELEGRAM_WEBHOOK_SECRET` |
 | `/storico` returns error | Missing Firestore composite index | Create the index — see Step 9 above |
 | Night false positives | IR image misclassified as "open" | Gemini prompt is tuned for this camera; adjust confidence threshold if needed |
