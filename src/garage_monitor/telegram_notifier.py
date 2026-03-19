@@ -156,7 +156,7 @@ class TelegramNotifier:
             f"  Scritture mese: {stats.firestore_writes:,} (~{writes_daily:.0f}/g vs 20.000/g free)\n\n"
             f"*Attivita' garage*\n"
             f"  Aperture mese: {stats.garage_openings:,}\n\n"
-            f"*Cloud Scheduler*: 3 / 3 job free\n\n"
+            f"*Cloud Scheduler*: 1 / 3 job free\n\n"
             f"*TOTALE STIMATO*: ~${gemini_cost:.2f}\n"
             f"{'Tutto dentro il free tier ✅' if not warnings else ''}"
             f"{warning_text}"
