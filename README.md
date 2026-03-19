@@ -22,9 +22,7 @@ The system is built around a single Google Cloud Function that executes the foll
 ```
 Cloud Scheduler
   |
-  |-- garage-monitor-day:   */5  7-23 * * *  (every 5 min, 7 AM – 11 PM)
-  |-- garage-monitor-night:  */15 0-6  * * *  (every 15 min, midnight – 6 AM)
-  |-- garage-report-trigger: 0 21 * * *       (daily at 9 PM)
+  |-- garage-monitor: */5 * * * *  (every 5 min, 24/7)
   |
   v
 Google Cloud Function "check-garage" (Python 3.12, gen2, 512 MB, 120s timeout)
@@ -61,7 +59,7 @@ Google Cloud Function "check-garage" (Python 3.12, gen2, 512 MB, 120s timeout)
   |       - "Still open" reminders (with photo, every 15 min up to 60 min)
   |       - Final warning (one-time escalation after 60 min open)
   |       - Error alerts (text only)
-  |       - Daily usage reports (text only)
+  |       - On-demand usage reports (text only, via /report command)
   |
   +<---- Telegram Webhook (inbound bot commands)
           - Validated via X-Telegram-Bot-Api-Secret-Token header + chat_id
@@ -76,12 +74,9 @@ The only paid service is the **Gemini API** — and it is only used when `GM_ANA
 
 ### Scheduled invocations per month
 
-| Period | Schedule | Calls/day | Calls/month |
-|---|---|---|---|
-| Daytime (7:00–23:59) | every 5 min | 204 | ~6,120 |
-| Nighttime (0:00–6:59) | every 15 min | 28 | ~840 |
-| Usage report (21:00) | once daily | 1 | ~30 |
-| **Total** | | **233** | **~6,990** |
+| Schedule | Calls/day | Calls/month |
+|---|---|---|
+| Every 5 min, 24/7 | 288 | ~8,640 |
 
 ### Gemini API cost (only when GM_ANALYZER=gemini)
 
@@ -96,19 +91,19 @@ Gemini 2.5 Flash paid tier pricing (Standard, per million tokens):
 
 Each call sends a JPEG image (~250–800 image tokens depending on resolution) plus the text prompt (~200 tokens). The output is a small JSON object (~30–50 tokens). Note: Gemini 2.5 Flash is a "thinking" model — output token count includes internal reasoning tokens, which can add overhead beyond the visible JSON response.
 
-With ~7,000 scheduled invocations/month, all calling Gemini:
-- Input: ~7,000 calls x ~500 tokens = ~3.5M tokens x $0.30/M = **~$1.05**
-- Output: ~7,000 calls x ~40 visible tokens (+ thinking overhead) = ~0.28–1.5M tokens x $2.50/M = **~$0.70–3.75**
-- **Total Gemini cost: ~$1.75–4.80/month**
+With ~8,640 scheduled invocations/month, all calling Gemini:
+- Input: ~8,640 calls x ~500 tokens = ~4.3M tokens x $0.30/M = **~$1.30**
+- Output: ~8,640 calls x ~40 visible tokens (+ thinking overhead) = ~0.35–1.8M tokens x $2.50/M = **~$0.87–4.50**
+- **Total Gemini cost: ~$2.17–5.80/month**
 
-The daily usage report tracks actual token consumption so you can monitor real costs.
+The `/report` command tracks actual token consumption so you can monitor real costs.
 
 ### GCP infrastructure (free tier)
 
 | Component | Free tier limit | Actual usage | Headroom |
 |---|---|---|---|
-| Cloud Functions | 2M invocations/month | ~7,000/month | <1% |
-| Cloud Scheduler | 3 jobs free | 3 jobs | 100% |
+| Cloud Functions | 2M invocations/month | ~8,640/month | <1% |
+| Cloud Scheduler | 3 jobs free | 1 job | 33% |
 | Firestore reads | 50,000/day | ~470/day | <1% |
 | Firestore writes | 20,000/day | ~700/day | <4% |
 
@@ -119,9 +114,9 @@ The daily usage report tracks actual token consumption so you can monitor real c
 | Blink cloud API | Free (included with camera hardware) |
 | Telegram Bot API | Free |
 
-### Daily usage report
+### Usage report
 
-Every day at 21:00 (Europe/Rome), the system sends a Telegram message with a detailed breakdown of the current month's usage: function invocations, Gemini API calls, input/output token counts, estimated Gemini cost in dollars, Firestore read/write counts, and warnings if any resource exceeds 80% of its free tier quota.
+Use the `/report` Telegram command to get a detailed breakdown of the current month's usage: function invocations, Gemini API calls, input/output token counts, estimated Gemini cost in dollars, Firestore read/write counts, and warnings if any resource exceeds 80% of its free tier quota.
 
 ## Prerequisites
 
@@ -181,7 +176,7 @@ Edit `.env` and fill in all values. Every variable uses the `GM_` prefix:
 | `GM_GCP_PROJECT_ID` | yes | — | Your Google Cloud project ID |
 | `GM_FIRESTORE_COLLECTION` | no | `garage_monitor` | Firestore collection name. Change only if running multiple instances |
 | `GM_TELEGRAM_WEBHOOK_SECRET` | no | `""` | Secret token for Telegram webhook validation. Required to enable interactive bot commands. Generate with `openssl rand -hex 32` |
-| `GM_GEMINI_COST_ALERT_THRESHOLD` | no | `3.0` | Monthly projected Gemini cost threshold ($) — triggers a warning in the daily report if exceeded |
+| `GM_GEMINI_COST_ALERT_THRESHOLD` | no | `3.0` | Monthly projected Gemini cost threshold ($) — triggers a warning in the `/report` output if exceeded |
 
 ### Step 5 — Blink Authentication (one-time, interactive)
 
@@ -222,10 +217,7 @@ What it does:
 2. Validates all required variables are set
 3. Deploys the Cloud Function (`check-garage`, gen2, `europe-west1`, 512 MB RAM, 120s timeout, HTTP trigger, `--allow-unauthenticated` for Telegram webhook access)
 4. Cleans up any legacy scheduler jobs
-5. Creates three Cloud Scheduler jobs:
-   - `garage-monitor-day`: every 5 minutes from 7:00 to 23:59 (Europe/Rome)
-   - `garage-monitor-night`: every 15 minutes from 00:00 to 06:59 (Europe/Rome)
-   - `garage-report-trigger`: daily at 21:00 (Europe/Rome), calls `?action=report`
+5. Creates the Cloud Scheduler job `garage-monitor`: every 5 minutes, 24/7 (Europe/Rome)
 6. Runs a manual test invocation to verify the deployment
 
 All scheduler jobs use OIDC authentication with the default compute service account.
@@ -284,11 +276,7 @@ gcloud functions logs read check-garage --gen2 --region=europe-west1
 ### Manual Trigger
 
 ```bash
-# Trigger a garage check
-gcloud scheduler jobs run garage-monitor-day --location=europe-west1
-
-# Trigger the daily usage report
-gcloud scheduler jobs run garage-report-trigger --location=europe-west1
+gcloud scheduler jobs run garage-monitor --location=europe-west1
 ```
 
 ### List Scheduler Jobs

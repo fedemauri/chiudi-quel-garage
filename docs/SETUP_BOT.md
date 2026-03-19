@@ -124,4 +124,4 @@ curl -X POST "https://api.telegram.org/bot${GM_TELEGRAM_BOT_TOKEN}/setMyCommands
 - Mismatched secret between Telegram and your config returns 403
 
 **Commands return "Nessuno stato disponibile":**
-- The monitor hasn't run its first check yet. Trigger manually: `gcloud scheduler jobs run garage-monitor-day --location=europe-west1`
+- The monitor hasn't run its first check yet. Trigger manually: `gcloud scheduler jobs run garage-monitor --location=europe-west1`

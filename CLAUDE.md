@@ -14,7 +14,7 @@ Automated garage door monitoring system with interactive Telegram bot. A Google 
 - **State:** Google Cloud Firestore (garage state, Blink credentials, usage stats, event history)
 - **Notifications:** Telegram Bot API via `httpx` (push notifications + interactive bot commands)
 - **Config:** `pydantic-settings` with `GM_` env prefix
-- **Scheduling:** Cloud Scheduler (every 5 min daytime, every 15 min nighttime)
+- **Scheduling:** Cloud Scheduler (every 5 min, 24/7)
 
 ## Project Structure
 
@@ -84,7 +84,7 @@ source .env && python scripts/setup_telegram_webhook.py <FUNCTION_URL>
 gcloud functions logs read check-garage --gen2 --region=europe-west1
 
 # Manual trigger
-gcloud scheduler jobs run garage-monitor-day --location=europe-west1
+gcloud scheduler jobs run garage-monitor --location=europe-west1
 
 # TFLite model: train and export (requires full TensorFlow locally)
 pip install "tensorflow>=2.16" Pillow scipy
@@ -95,22 +95,22 @@ python scripts/train_model.py --export      # Re-export .keras to .tflite withou
 
 ## Architecture Notes
 
-- **Entry point:** `check_garage()` in `main.py` — HTTP Cloud Function that routes between: Telegram webhook (JSON with "message"), scheduled report (`?action=report`), and normal garage check
+- **Entry point:** `check_garage()` in `main.py` — HTTP Cloud Function that routes between: Telegram webhook (JSON with "message"), usage report (`?action=report`), and normal garage check
 - **Webhook security:** Validates `X-Telegram-Bot-Api-Secret-Token` header + chat_id. Function is `--allow-unauthenticated` for Telegram webhook access
 - **Bot commands:** `/stato`, `/foto`, `/report`, `/muto Nh`, `/smuto`, `/storico` — handled by `telegram_handler.py`
 - **Analyzer switch:** `GM_ANALYZER` selects between `gemini` (cloud API, paid) and `tflite` (local MobileNetV2, free, ~50-100ms). Both implement `analyze(image_bytes) -> GeminiAnalysisResult` so the pipeline is identical. The switch is in `main.py:_check_garage_async()`. TFLite uses `ai-edge-litert` runtime on Python ≥3.12 with float16-quantized model (`model/garage_classifier.tflite`, 4.4 MB). See `docs/TFLITE_MODEL.md` for architecture, training pipeline, and retraining instructions
 - **Reminders:** Sends "still open" alerts every 15 min for up to 60 min after door opens (skipped when muted)
 - **Mute system:** `/muto` silences reminders for N hours, auto-expires when time is up
-- **Night alerts:** Priority alert with distinct formatting when garage opens between 0:00-6:59 (Europe/Rome, matching scheduler night hours)
+- **Night alerts:** Priority alert with distinct formatting when garage opens between 0:00-6:59 (Europe/Rome)
 - **Final warning:** One-time escalation alert after garage has been open >60 min
-- **Health check:** Staleness detection alerts if last check exceeds expected interval (12 min day, 20 min night)
-- **Cost monitoring:** Projected monthly Gemini cost alert in daily report when exceeding threshold
+- **Health check:** Staleness detection alerts if last check exceeds 12-minute expected interval
+- **Cost monitoring:** Projected monthly Gemini cost alert in usage report when exceeding threshold
 - **Event history:** Status changes logged to Firestore with 30-day TTL, viewable via `/storico`. Requires composite index on `(type ASC, timestamp DESC)`
 - **Error handling:** Tracks consecutive errors in Firestore, alerts via Telegram after 3 failures
 - **Credentials refresh:** Blink tokens are refreshed on each call and saved back to Firestore
 - **Usage tracking:** Firestore counters track invocations, Gemini tokens, Firestore ops, and garage openings per month
-- **Scheduler:** Two jobs — daytime (7-23h, every 5 min) and nighttime (0-6h, every 15 min), timezone Europe/Rome
-- **Daily report:** Scheduler job at 21:00 sends usage summary via Telegram (includes garage activity and cost warnings)
+- **Scheduler:** Single job — every 5 min, 24/7, timezone Europe/Rome
+- **Usage report:** On-demand via `/report` Telegram command (includes garage activity and cost warnings)
 
 ## Coding Conventions
 

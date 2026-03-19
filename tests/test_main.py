@@ -7,8 +7,7 @@ import pytest
 
 from garage_monitor.gemini_analyzer import GeminiParseError
 from garage_monitor.main import (
-    STALENESS_MARGIN_DAY,
-    STALENESS_MARGIN_NIGHT,
+    STALENESS_MARGIN,
     _check_garage_async,
     _is_night_time,
     _send_usage_report,
@@ -642,7 +641,7 @@ class TestStalenessDetection:
     def test_stale_check_sends_alert(
         self, mock_store_cls, mock_tg_cls, mock_gem_cls, mock_blink_cls
     ):
-        """last_check 15+ min ago during daytime -> staleness alert sent."""
+        """last_check 15+ min ago -> staleness alert sent."""
         now = datetime.now(timezone.utc)
         _, notifier, _, _ = _setup_mocks(
             mock_store_cls, mock_tg_cls, mock_gem_cls, mock_blink_cls,
@@ -653,8 +652,7 @@ class TestStalenessDetection:
             ),
         )
 
-        with patch("garage_monitor.main._is_night_time", return_value=False):
-            result = asyncio.run(_check_garage_async(_make_settings()))
+        result = asyncio.run(_check_garage_async(_make_settings()))
 
         assert result == "OK"
         # Staleness alert was sent via send_error_alert
@@ -683,8 +681,7 @@ class TestStalenessDetection:
             ),
         )
 
-        with patch("garage_monitor.main._is_night_time", return_value=False):
-            result = asyncio.run(_check_garage_async(_make_settings()))
+        result = asyncio.run(_check_garage_async(_make_settings()))
 
         assert result == "OK"
         # No staleness alert
@@ -708,33 +705,6 @@ class TestStalenessDetection:
 
         assert result == "OK"
         notifier.send_error_alert.assert_not_called()
-
-    @patch("garage_monitor.main.BlinkClient")
-    @patch("garage_monitor.main.GeminiAnalyzer")
-    @patch("garage_monitor.main.TelegramNotifier")
-    @patch("garage_monitor.main.FirestoreStore")
-    def test_night_uses_wider_margin(
-        self, mock_store_cls, mock_tg_cls, mock_gem_cls, mock_blink_cls
-    ):
-        """At night, 15 min is NOT stale (margin is 20 min)."""
-        now = datetime.now(timezone.utc)
-        _, notifier, _, _ = _setup_mocks(
-            mock_store_cls, mock_tg_cls, mock_gem_cls, mock_blink_cls,
-            state=GarageState(
-                current_status=GarageStatus.CLOSED,
-                last_check_time=now - timedelta(minutes=15),
-                last_change_time=now - timedelta(hours=1),
-            ),
-        )
-
-        with patch("garage_monitor.main._is_night_time", return_value=True):
-            result = asyncio.run(_check_garage_async(_make_settings()))
-
-        assert result == "OK"
-        # 15 min < 20 min night margin -> no staleness alert
-        for call in notifier.send_error_alert.call_args_list:
-            assert "Possibile interruzione" not in call[0][0]
-
 
 class TestNightAlert:
     @patch("garage_monitor.main._is_night_time", return_value=True)

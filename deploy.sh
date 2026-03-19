@@ -35,8 +35,7 @@ done
 PROJECT_ID="$GM_GCP_PROJECT_ID"
 REGION="${GM_GCP_REGION:-europe-west1}"
 FUNCTION_NAME="check-garage"
-SCHEDULER_JOB_DAY="garage-monitor-day"
-SCHEDULER_JOB_NIGHT="garage-monitor-night"
+SCHEDULER_JOB="garage-monitor"
 
 gcloud config set project "$PROJECT_ID"
 
@@ -58,45 +57,24 @@ FUNCTION_URL=$(gcloud functions describe "$FUNCTION_NAME" --gen2 --region="$REGI
 echo "Function URL: $FUNCTION_URL"
 
 echo ""
-echo ">>> Creo/aggiorno Cloud Scheduler jobs (giorno ogni 5 min, notte ogni 15 min)..."
+echo ">>> Creo/aggiorno Cloud Scheduler job (ogni 5 min, 24/7)..."
 SA_EMAIL=$(gcloud iam service-accounts list --filter="displayName:Default compute service account" --format='value(email)' | head -1)
 if [ -z "$SA_EMAIL" ]; then
     SA_EMAIL="$(gcloud config get-value account 2>/dev/null)"
 fi
 
-# Pulizia vecchio job singolo + nuovi job
+# Pulizia vecchi job (day, night, report, legacy)
 gcloud scheduler jobs delete "garage-monitor-trigger" --location="$REGION" --quiet 2>/dev/null || true
-gcloud scheduler jobs delete "$SCHEDULER_JOB_DAY" --location="$REGION" --quiet 2>/dev/null || true
-gcloud scheduler jobs delete "$SCHEDULER_JOB_NIGHT" --location="$REGION" --quiet 2>/dev/null || true
+gcloud scheduler jobs delete "garage-monitor-day" --location="$REGION" --quiet 2>/dev/null || true
+gcloud scheduler jobs delete "garage-monitor-night" --location="$REGION" --quiet 2>/dev/null || true
+gcloud scheduler jobs delete "garage-report-trigger" --location="$REGION" --quiet 2>/dev/null || true
+gcloud scheduler jobs delete "$SCHEDULER_JOB" --location="$REGION" --quiet 2>/dev/null || true
 
-gcloud scheduler jobs create http "$SCHEDULER_JOB_DAY" \
+gcloud scheduler jobs create http "$SCHEDULER_JOB" \
     --location="$REGION" \
-    --schedule="*/5 7-23 * * *" \
+    --schedule="*/5 * * * *" \
     --time-zone="Europe/Rome" \
     --uri="$FUNCTION_URL" \
-    --http-method=POST \
-    --oidc-service-account-email="$SA_EMAIL" \
-    --oidc-token-audience="$FUNCTION_URL"
-
-gcloud scheduler jobs create http "$SCHEDULER_JOB_NIGHT" \
-    --location="$REGION" \
-    --schedule="*/15 0-6 * * *" \
-    --time-zone="Europe/Rome" \
-    --uri="$FUNCTION_URL" \
-    --http-method=POST \
-    --oidc-service-account-email="$SA_EMAIL" \
-    --oidc-token-audience="$FUNCTION_URL"
-
-REPORT_JOB="garage-report-trigger"
-echo ""
-echo ">>> Creo/aggiorno Cloud Scheduler job report (21:00)..."
-gcloud scheduler jobs delete "$REPORT_JOB" --location="$REGION" --quiet 2>/dev/null || true
-
-gcloud scheduler jobs create http "$REPORT_JOB" \
-    --location="$REGION" \
-    --schedule="0 21 * * *" \
-    --time-zone="Europe/Rome" \
-    --uri="${FUNCTION_URL}?action=report" \
     --http-method=POST \
     --oidc-service-account-email="$SA_EMAIL" \
     --oidc-token-audience="$FUNCTION_URL"
@@ -110,6 +88,6 @@ echo "=== Deploy completato! ==="
 echo ""
 echo "Comandi utili:"
 echo "  Logs:    gcloud functions logs read $FUNCTION_NAME --gen2 --region=$REGION"
-echo "  Trigger: gcloud scheduler jobs run $SCHEDULER_JOB_DAY --location=$REGION"
+echo "  Trigger: gcloud scheduler jobs run $SCHEDULER_JOB --location=$REGION"
 echo "  Jobs:    gcloud scheduler jobs list --location=$REGION"
 echo "  Webhook: python scripts/setup_telegram_webhook.py $FUNCTION_URL"

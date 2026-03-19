@@ -19,13 +19,12 @@ logging.basicConfig(level=logging.INFO)
 MAX_CONSECUTIVE_ERRORS = 3
 REMINDER_INTERVAL_MINUTES = 15
 MAX_REMINDER_MINUTES = 60
-STALENESS_MARGIN_DAY = 12
-STALENESS_MARGIN_NIGHT = 20
+STALENESS_MARGIN = 12
 ROME_TZ = ZoneInfo("Europe/Rome")
 
 
 def _is_night_time(utc_now: datetime) -> bool:
-    """Return True if the local time in Rome is between 0:00 and 6:59 (matching scheduler night hours)."""
+    """Return True if the local time in Rome is between 0:00 and 6:59 (night alert hours)."""
     return 0 <= utc_now.astimezone(ROME_TZ).hour < 7
 
 
@@ -46,12 +45,11 @@ async def _check_garage_async(settings: Settings) -> str:
 
     # Staleness detection: alert if last check is older than expected
     if not first_run and state.last_check_time is not None:
-        margin = STALENESS_MARGIN_NIGHT if _is_night_time(state.last_check_time) else STALENESS_MARGIN_DAY
         elapsed_minutes = (now - state.last_check_time).total_seconds() / 60
-        if elapsed_minutes > margin:
+        if elapsed_minutes > STALENESS_MARGIN:
             notifier.send_error_alert(
                 f"Possibile interruzione: ultimo controllo {int(elapsed_minutes)} minuti fa "
-                f"(atteso max {margin} min)."
+                f"(atteso max {STALENESS_MARGIN} min)."
             )
 
     blink = BlinkClient()
