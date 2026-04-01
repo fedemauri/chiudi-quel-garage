@@ -8,6 +8,8 @@ dist/
 build/
 .pytest_cache/
 *.idea
+.idea/
 .claude/
+.vscode/
 .venv-train/
 data/images/
