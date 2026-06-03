@@ -217,16 +217,22 @@ class TelegramNotifier:
         """Send a photo (public wrapper for bot commands)."""
         self._send_photo(photo_bytes, caption or "\U0001f4f7 Foto dal vivo")
 
-    def _send_message(self, text: str) -> None:
+    def _send_message(self, text: str, *, markdown: bool = True) -> None:
+        payload = {"chat_id": self._chat_id, "text": text}
+        if markdown:
+            payload["parse_mode"] = "Markdown"
         with httpx.Client() as client:
-            resp = client.post(
-                f"{self._base_url}/sendMessage",
-                json={
-                    "chat_id": self._chat_id,
-                    "text": text,
-                    "parse_mode": "Markdown",
-                },
-            )
+            resp = client.post(f"{self._base_url}/sendMessage", json=payload)
+            # A 400 with Markdown usually means the body contains characters
+            # Telegram can't parse as entities (e.g. raw exception text with
+            # '[', '_', '*'). Retry as plain text so the message — often an
+            # error alert — is still delivered instead of silently dropped.
+            if markdown and resp.status_code == 400:
+                logger.warning(
+                    "Markdown send rejected (400); retrying as plain text."
+                )
+                self._send_message(text, markdown=False)
+                return
             resp.raise_for_status()
 
     def _send_photo(self, photo_bytes: bytes, caption: str) -> None:

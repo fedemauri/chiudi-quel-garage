@@ -62,6 +62,22 @@ class TestFirestoreStore:
         assert call_data["consecutive_errors"] == 1
 
     @patch("garage_monitor.firestore_store.FirestoreClient")
+    def test_save_state_omits_removed_fields(self, mock_client_cls):
+        """Debounce/hash were removed: their fields must no longer be persisted."""
+        mock_db = MagicMock()
+        mock_client_cls.return_value = mock_db
+
+        store = FirestoreStore("test-project")
+        store.save_state(GarageState(current_status=GarageStatus.CLOSED))
+
+        call_data = (
+            mock_db.collection.return_value.document.return_value.set.call_args[0][0]
+        )
+        assert "pending_status" not in call_data
+        assert "pending_count" not in call_data
+        assert "last_image_hash" not in call_data
+
+    @patch("garage_monitor.firestore_store.FirestoreClient")
     def test_get_blink_credentials_not_found(self, mock_client_cls):
         mock_db = MagicMock()
         mock_client_cls.return_value = mock_db

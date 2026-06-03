@@ -1,5 +1,4 @@
 import asyncio
-import hashlib
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -111,7 +110,7 @@ class TestCheckGarage:
     @patch("garage_monitor.main.TelegramNotifier")
     @patch("garage_monitor.main.FirestoreStore")
     def test_status_change(self, mock_store_cls, mock_tg_cls, mock_gem_cls, mock_blink_cls, _mock_night):
-        """Status change requires debounce: pending_count=1 means this is the 2nd confirmation."""
+        """A confident reading different from the current status changes state and notifies."""
         now = datetime.now(timezone.utc)
         store, notifier, _, _ = _setup_mocks(
             mock_store_cls, mock_tg_cls, mock_gem_cls, mock_blink_cls,
@@ -119,8 +118,6 @@ class TestCheckGarage:
                 current_status=GarageStatus.CLOSED,
                 last_check_time=now,
                 last_change_time=now,
-                pending_status=GarageStatus.OPEN,
-                pending_count=1,
             ),
             analysis_status=GarageStatus.OPEN,
             analysis_confidence=0.9,
@@ -219,145 +216,6 @@ class TestCheckGarage:
         assert result == "OK"
         mock_tflite_cls.assert_called_once()
         notifier.send_monitor_started.assert_called_once()
-
-
-class TestDebounce:
-    @patch("garage_monitor.main.BlinkClient")
-    @patch("garage_monitor.main.GeminiAnalyzer")
-    @patch("garage_monitor.main.TelegramNotifier")
-    @patch("garage_monitor.main.FirestoreStore")
-    def test_single_detection_sets_pending(
-        self, mock_store_cls, mock_tg_cls, mock_gem_cls, mock_blink_cls
-    ):
-        """First detection of a different status sets pending but doesn't change state."""
-        now = datetime.now(timezone.utc)
-        store, notifier, _, _ = _setup_mocks(
-            mock_store_cls, mock_tg_cls, mock_gem_cls, mock_blink_cls,
-            state=GarageState(
-                current_status=GarageStatus.CLOSED,
-                last_check_time=now,
-                last_change_time=now,
-            ),
-            analysis_status=GarageStatus.OPEN,
-            analysis_confidence=0.9,
-            analysis_reasoning="Door raised",
-        )
-
-        result = asyncio.run(_check_garage_async(_make_settings()))
-
-        assert result == "OK"
-        notifier.send_status_change.assert_not_called()
-        saved_state = store.save_state.call_args[0][0]
-        assert saved_state.current_status == GarageStatus.CLOSED
-        assert saved_state.pending_status == GarageStatus.OPEN
-        assert saved_state.pending_count == 1
-
-    @patch("garage_monitor.main.BlinkClient")
-    @patch("garage_monitor.main.GeminiAnalyzer")
-    @patch("garage_monitor.main.TelegramNotifier")
-    @patch("garage_monitor.main.FirestoreStore")
-    def test_oscillation_resets_pending(
-        self, mock_store_cls, mock_tg_cls, mock_gem_cls, mock_blink_cls
-    ):
-        """If current reading matches current_status, pending is reset."""
-        now = datetime.now(timezone.utc)
-        store, notifier, _, _ = _setup_mocks(
-            mock_store_cls, mock_tg_cls, mock_gem_cls, mock_blink_cls,
-            state=GarageState(
-                current_status=GarageStatus.CLOSED,
-                last_check_time=now,
-                last_change_time=now,
-                pending_status=GarageStatus.OPEN,
-                pending_count=1,
-            ),
-            analysis_status=GarageStatus.CLOSED,
-            analysis_confidence=0.98,
-            analysis_reasoning="Door closed",
-        )
-
-        result = asyncio.run(_check_garage_async(_make_settings()))
-
-        assert result == "OK"
-        notifier.send_status_change.assert_not_called()
-        saved_state = store.save_state.call_args[0][0]
-        assert saved_state.current_status == GarageStatus.CLOSED
-        assert saved_state.pending_status is None
-        assert saved_state.pending_count == 0
-
-
-class TestImageHashSkip:
-    @patch("garage_monitor.main.BlinkClient")
-    @patch("garage_monitor.main.GeminiAnalyzer")
-    @patch("garage_monitor.main.TelegramNotifier")
-    @patch("garage_monitor.main.FirestoreStore")
-    def test_same_image_skips_gemini(
-        self, mock_store_cls, mock_tg_cls, mock_gem_cls, mock_blink_cls
-    ):
-        """Immagine identica alla precedente -> Gemini non viene chiamato."""
-        snapshot_data = b"jpeg-data"
-        image_hash = hashlib.md5(snapshot_data).hexdigest()
-        now = datetime.now(timezone.utc)
-        store, notifier, analyzer, _ = _setup_mocks(
-            mock_store_cls, mock_tg_cls, mock_gem_cls, mock_blink_cls,
-            state=GarageState(
-                current_status=GarageStatus.CLOSED,
-                last_check_time=now,
-                last_change_time=now,
-                last_image_hash=image_hash,
-            ),
-        )
-
-        result = asyncio.run(_check_garage_async(_make_settings()))
-
-        assert result == "OK"
-        analyzer.analyze.assert_not_called()
-        store.save_state.assert_called_once()
-        # function_invocations tracked, but no gemini_calls
-        call_kwargs = store.increment_usage.call_args[1]
-        assert call_kwargs["function_invocations"] == 1
-        assert "gemini_calls" not in call_kwargs
-
-    @patch("garage_monitor.main.BlinkClient")
-    @patch("garage_monitor.main.GeminiAnalyzer")
-    @patch("garage_monitor.main.TelegramNotifier")
-    @patch("garage_monitor.main.FirestoreStore")
-    def test_different_image_calls_gemini(
-        self, mock_store_cls, mock_tg_cls, mock_gem_cls, mock_blink_cls
-    ):
-        """Immagine diversa dalla precedente -> Gemini viene chiamato."""
-        now = datetime.now(timezone.utc)
-        store, notifier, analyzer, _ = _setup_mocks(
-            mock_store_cls, mock_tg_cls, mock_gem_cls, mock_blink_cls,
-            state=GarageState(
-                current_status=GarageStatus.CLOSED,
-                last_check_time=now,
-                last_change_time=now,
-                last_image_hash="different-hash",
-            ),
-        )
-
-        result = asyncio.run(_check_garage_async(_make_settings()))
-
-        assert result == "OK"
-        analyzer.analyze.assert_called_once()
-
-    @patch("garage_monitor.main.BlinkClient")
-    @patch("garage_monitor.main.GeminiAnalyzer")
-    @patch("garage_monitor.main.TelegramNotifier")
-    @patch("garage_monitor.main.FirestoreStore")
-    def test_first_run_never_skips(
-        self, mock_store_cls, mock_tg_cls, mock_gem_cls, mock_blink_cls
-    ):
-        """First run -> Gemini viene sempre chiamato anche se hash presente."""
-        store, notifier, analyzer, _ = _setup_mocks(
-            mock_store_cls, mock_tg_cls, mock_gem_cls, mock_blink_cls,
-            state=None,
-        )
-
-        result = asyncio.run(_check_garage_async(_make_settings()))
-
-        assert result == "OK"
-        analyzer.analyze.assert_called_once()
 
 
 class TestStillOpenReminder:
@@ -487,8 +345,6 @@ class TestStillOpenReminder:
                 last_check_time=now - timedelta(minutes=5),
                 last_change_time=now - timedelta(minutes=20),
                 last_reminder_time=now - timedelta(minutes=5),
-                pending_status=GarageStatus.CLOSED,
-                pending_count=1,
             ),
             analysis_status=GarageStatus.CLOSED,
             analysis_confidence=0.95,
@@ -503,14 +359,44 @@ class TestStillOpenReminder:
         assert saved_state.last_reminder_time is None
 
 
-class TestImmediateErrors:
+class TestConfigErrorThreshold:
+    """Config/parse errors (camera-not-found, Gemini parse) only alert after
+    MAX_CONSECUTIVE_ERRORS, so a single transient hiccup doesn't notify."""
+
     @patch("garage_monitor.main.BlinkClient")
     @patch("garage_monitor.main.GeminiAnalyzer")
     @patch("garage_monitor.main.TelegramNotifier")
     @patch("garage_monitor.main.FirestoreStore")
-    def test_camera_not_found_immediate_alert(
+    def test_camera_not_found_no_alert_before_threshold(
         self, mock_store_cls, mock_tg_cls, mock_gem_cls, mock_blink_cls
     ):
+        """A single camera-not-found (transient) increments the counter but does not alert."""
+        now = datetime.now(timezone.utc)
+        store, notifier, _, _ = _setup_mocks(
+            mock_store_cls, mock_tg_cls, mock_gem_cls, mock_blink_cls,
+            state=GarageState(
+                current_status=GarageStatus.CLOSED,
+                last_check_time=now,
+                last_change_time=now,
+            ),
+            snapshot_side_effect=ValueError("Camera 'X' not found"),
+        )
+
+        result = asyncio.run(_check_garage_async(_make_settings()))
+
+        assert result == "CONFIG_ERROR"
+        notifier.send_error_alert.assert_not_called()
+        saved_state = store.save_state.call_args[0][0]
+        assert saved_state.consecutive_errors == 1
+
+    @patch("garage_monitor.main.BlinkClient")
+    @patch("garage_monitor.main.GeminiAnalyzer")
+    @patch("garage_monitor.main.TelegramNotifier")
+    @patch("garage_monitor.main.FirestoreStore")
+    def test_camera_not_found_alerts_after_threshold(
+        self, mock_store_cls, mock_tg_cls, mock_gem_cls, mock_blink_cls
+    ):
+        """The 3rd consecutive camera-not-found triggers the alert."""
         now = datetime.now(timezone.utc)
         _, notifier, _, _ = _setup_mocks(
             mock_store_cls, mock_tg_cls, mock_gem_cls, mock_blink_cls,
@@ -518,6 +404,7 @@ class TestImmediateErrors:
                 current_status=GarageStatus.CLOSED,
                 last_check_time=now,
                 last_change_time=now,
+                consecutive_errors=2,
             ),
             snapshot_side_effect=ValueError("Camera 'X' not found"),
         )
@@ -533,7 +420,7 @@ class TestImmediateErrors:
     @patch("garage_monitor.main.GeminiAnalyzer")
     @patch("garage_monitor.main.TelegramNotifier")
     @patch("garage_monitor.main.FirestoreStore")
-    def test_gemini_parse_error_immediate_alert(
+    def test_gemini_parse_error_no_alert_before_threshold(
         self, mock_store_cls, mock_tg_cls, mock_gem_cls, mock_blink_cls
     ):
         now = datetime.now(timezone.utc)
@@ -543,6 +430,30 @@ class TestImmediateErrors:
                 current_status=GarageStatus.CLOSED,
                 last_check_time=now,
                 last_change_time=now,
+            ),
+            analyze_side_effect=GeminiParseError("Bad JSON"),
+        )
+
+        result = asyncio.run(_check_garage_async(_make_settings()))
+
+        assert result == "CONFIG_ERROR"
+        notifier.send_error_alert.assert_not_called()
+
+    @patch("garage_monitor.main.BlinkClient")
+    @patch("garage_monitor.main.GeminiAnalyzer")
+    @patch("garage_monitor.main.TelegramNotifier")
+    @patch("garage_monitor.main.FirestoreStore")
+    def test_gemini_parse_error_alerts_after_threshold(
+        self, mock_store_cls, mock_tg_cls, mock_gem_cls, mock_blink_cls
+    ):
+        now = datetime.now(timezone.utc)
+        _, notifier, _, _ = _setup_mocks(
+            mock_store_cls, mock_tg_cls, mock_gem_cls, mock_blink_cls,
+            state=GarageState(
+                current_status=GarageStatus.CLOSED,
+                last_check_time=now,
+                last_change_time=now,
+                consecutive_errors=2,
             ),
             analyze_side_effect=GeminiParseError("Bad JSON"),
         )
@@ -723,8 +634,6 @@ class TestNightAlert:
                 current_status=GarageStatus.CLOSED,
                 last_check_time=now,
                 last_change_time=now,
-                pending_status=GarageStatus.OPEN,
-                pending_count=1,
             ),
             analysis_status=GarageStatus.OPEN,
             analysis_confidence=0.9,
@@ -756,8 +665,6 @@ class TestNightAlert:
                 current_status=GarageStatus.CLOSED,
                 last_check_time=now,
                 last_change_time=now,
-                pending_status=GarageStatus.OPEN,
-                pending_count=1,
             ),
             analysis_status=GarageStatus.OPEN,
             analysis_confidence=0.9,
@@ -850,8 +757,6 @@ class TestFinalWarning:
                 last_change_time=now - timedelta(minutes=70),
                 last_reminder_time=now - timedelta(minutes=20),
                 last_final_warning_sent=True,
-                pending_status=GarageStatus.CLOSED,
-                pending_count=1,
             ),
             analysis_status=GarageStatus.CLOSED,
             analysis_confidence=0.95,
@@ -881,8 +786,6 @@ class TestEventHistory:
                 current_status=GarageStatus.CLOSED,
                 last_check_time=now,
                 last_change_time=now - timedelta(minutes=30),
-                pending_status=GarageStatus.OPEN,
-                pending_count=1,
             ),
             analysis_status=GarageStatus.OPEN,
             analysis_confidence=0.9,
@@ -916,8 +819,6 @@ class TestEventHistory:
                 current_status=GarageStatus.OPEN,
                 last_check_time=now - timedelta(minutes=5),
                 last_change_time=now - timedelta(minutes=30),
-                pending_status=GarageStatus.CLOSED,
-                pending_count=1,
             ),
             analysis_status=GarageStatus.CLOSED,
             analysis_confidence=0.95,
@@ -948,8 +849,6 @@ class TestEventHistory:
                 current_status=GarageStatus.CLOSED,
                 last_check_time=now,
                 last_change_time=now,
-                pending_status=GarageStatus.OPEN,
-                pending_count=1,
             ),
             analysis_status=GarageStatus.OPEN,
             analysis_confidence=0.9,

@@ -194,15 +194,20 @@ async def _check_garage_async(settings: Settings) -> str:
         state.consecutive_errors += 1
         state.last_check_time = now
         store.save_state(state)
-        if isinstance(e, GeminiParseError):
-            notifier.send_error_alert(
-                "Gemini ha risposto in modo inatteso. Controlla i log."
-            )
-        else:
-            notifier.send_error_alert(
-                f"Camera non trovata. Verifica GM_BLINK_CAMERA_NAME e rideploya.\n"
-                f"Dettaglio: {e}"
-            )
+        # Only alert after repeated failures: a single camera-not-found or
+        # parse glitch is usually a transient Blink/API hiccup that self-heals
+        # on the next 5-minute run, so it shouldn't trigger a notification.
+        if state.consecutive_errors >= MAX_CONSECUTIVE_ERRORS:
+            if isinstance(e, GeminiParseError):
+                notifier.send_error_alert(
+                    "Gemini ha risposto in modo inatteso. Controlla i log."
+                )
+            else:
+                notifier.send_error_alert(
+                    f"Camera non trovata dopo {state.consecutive_errors} tentativi. "
+                    f"Verifica GM_BLINK_CAMERA_NAME e rideploya.\n"
+                    f"Dettaglio: {e}"
+                )
         return "CONFIG_ERROR"
 
     except Exception as e:
