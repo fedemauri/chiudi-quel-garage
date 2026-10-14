@@ -253,6 +253,29 @@ Enable automatic cleanup of events older than 30 days:
 gcloud firestore fields ttls update expire_at --collection-group=garage_monitor --enable-ttl --project=<YOUR_PROJECT_ID>
 ```
 
+## Home Assistant & endpoint security (since 14/10/2026)
+
+**Who can call the function.** The Cloud Function URL is public, so:
+
+| Request | Who | Protection |
+|---|---|---|
+| Normal check (no `action`) and `?action=report` | Cloud Scheduler only | header `X-Scheduler-Token` = `GM_SCHEDULER_TOKEN` (set by `deploy.sh` on the job). Without it: **403**, no Blink snapshot |
+| Telegram webhook | Telegram | header `X-Telegram-Bot-Api-Secret-Token` + chat id check |
+| `GET ?action=status` | Home Assistant | `Authorization: Bearer GM_STATUS_TOKEN` |
+
+`GM_BLINK_PASSWORD` is not sent to the function any more (only `scripts/setup_blink.py` uses it). Tokens live in 1Password (*Private*: "garage scheduler token", "garage status token"); the `.env` reads them with `op read` at deploy time.
+
+**Status endpoint.** Read-only: it reads the Firestore `state` document and returns JSON — no Blink snapshot, no analyzer, no Telegram, no writes:
+
+```bash
+curl -H "Authorization: Bearer $GM_STATUS_TOKEN" "$FUNCTION_URL?action=status"
+# {"status": "closed", "last_check": "...", "last_change": "...", "consecutive_errors": 0, "muted_until": null, "stale": false}
+```
+
+`stale` is true when the last check is older than 12 minutes.
+
+**Home Assistant** (homelab, LAN/Tailscale only) polls it every minute with a RESTful sensor (token in `secrets.yaml`): `binary_sensor.garage` (garage door), `binary_sensor.garage_monitor_fermo` (stale or 3 errors), last check/change timestamps. HA automations add an in-app alert while the door is open, an Echo announcement after 15 and 30 minutes, and a phone notification if this monitor stops. Telegram reminders and night alerts stay here. HA also has its own Blink login (a separate client on the same account): it never triggers snapshots of the garage camera.
+
 ## Telegram Bot Commands
 
 Once the webhook is set up, you can interact with the bot via Telegram:
