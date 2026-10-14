@@ -1,4 +1,6 @@
 import asyncio
+import hmac
+import json
 import logging
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
@@ -258,6 +260,44 @@ def _send_usage_report(settings: Settings) -> None:
     notifier.send_usage_report(stats, days_in_period, cost_warning=cost_warning)
 
 
+def _iso(value: datetime | None) -> str | None:
+    return value.isoformat() if value is not None else None
+
+
+def _handle_status_request(request, settings: Settings):
+    """Read-only garage state for Home Assistant (REST sensor).
+
+    Reads only the Firestore 'state' document: no Blink snapshot, no analyzer call,
+    no Telegram message, no writes. Protected by GM_STATUS_TOKEN (Bearer header).
+    """
+    if not settings.status_token:
+        return "STATUS_DISABLED", 403
+
+    auth = request.headers.get("Authorization", "")
+    token = auth[len("Bearer "):] if auth.startswith("Bearer ") else ""
+    if not hmac.compare_digest(token.encode(), settings.status_token.encode()):
+        return "INVALID_TOKEN", 403
+
+    store = FirestoreStore(settings.gcp_project_id, settings.firestore_collection)
+    state = store.get_state() or GarageState()
+    now = datetime.now(timezone.utc)
+
+    stale = True
+    if state.last_check_time is not None:
+        elapsed_minutes = (now - state.last_check_time).total_seconds() / 60
+        stale = elapsed_minutes > STALENESS_MARGIN
+
+    body = {
+        "status": state.current_status.value,
+        "last_check": _iso(state.last_check_time),
+        "last_change": _iso(state.last_change_time),
+        "consecutive_errors": state.consecutive_errors,
+        "muted_until": _iso(state.muted_until),
+        "stale": stale,
+    }
+    return json.dumps(body), 200, {"Content-Type": "application/json", "Cache-Control": "no-store"}
+
+
 def _handle_telegram_webhook(request, body: dict, settings: Settings):
     """Validate and dispatch Telegram webhook requests."""
     # Webhook disabled if secret not configured
@@ -291,6 +331,8 @@ def check_garage(request):
             return _handle_telegram_webhook(request, body, settings)
 
     action = request.args.get("action")
+    if action == "status":
+        return _handle_status_request(request, settings)
     if action == "report":
         _send_usage_report(settings)
         return "REPORT_SENT", 200

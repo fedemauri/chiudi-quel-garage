@@ -35,6 +35,7 @@ def _make_settings(**overrides):
         "firestore_collection": "garage_monitor",
         "gemini_cost_alert_threshold": 3.0,
         "telegram_webhook_secret": "test-secret",
+        "status_token": "",
     }
     defaults.update(overrides)
     settings = MagicMock()
@@ -888,3 +889,107 @@ class TestEventHistory:
 
         assert result == "OK"
         store.save_event.assert_not_called()
+
+
+class TestStatusEndpoint:
+    """GET ?action=status: read-only state for Home Assistant."""
+
+    def _request(self, auth=None):
+        request = MagicMock()
+        request.content_type = None
+        request.args = {"action": "status"}
+        request.headers = {"Authorization": auth} if auth is not None else {}
+        return request
+
+    @patch("garage_monitor.main.Settings")
+    @patch("garage_monitor.main.FirestoreStore")
+    def test_disabled_without_token(self, mock_store_cls, mock_settings_cls):
+        mock_settings_cls.return_value = _make_settings(status_token="")
+        result = check_garage(self._request("Bearer anything"))
+        assert result == ("STATUS_DISABLED", 403)
+        mock_store_cls.assert_not_called()
+
+    @patch("garage_monitor.main.Settings")
+    @patch("garage_monitor.main.FirestoreStore")
+    @pytest.mark.parametrize("auth", [None, "", "Bearer wrong", "tok-123", "Basic tok-123"])
+    def test_rejects_wrong_token(self, mock_store_cls, mock_settings_cls, auth):
+        mock_settings_cls.return_value = _make_settings(status_token="tok-123")
+        result = check_garage(self._request(auth))
+        assert result == ("INVALID_TOKEN", 403)
+        mock_store_cls.assert_not_called()
+
+    @patch("garage_monitor.main.Settings")
+    @patch("garage_monitor.main.BlinkClient")
+    @patch("garage_monitor.main.GeminiAnalyzer")
+    @patch("garage_monitor.main.TelegramNotifier")
+    @patch("garage_monitor.main.FirestoreStore")
+    def test_returns_state_without_side_effects(
+        self, mock_store_cls, mock_tg_cls, mock_gem_cls, mock_blink_cls, mock_settings_cls
+    ):
+        import json
+
+        mock_settings_cls.return_value = _make_settings(status_token="tok-123")
+        now = datetime.now(timezone.utc)
+        store = MagicMock()
+        store.get_state.return_value = GarageState(
+            current_status=GarageStatus.OPEN,
+            last_check_time=now - timedelta(minutes=3),
+            last_change_time=now - timedelta(minutes=20),
+            consecutive_errors=0,
+        )
+        mock_store_cls.return_value = store
+
+        body, status_code, headers = check_garage(self._request("Bearer tok-123"))
+
+        assert status_code == 200
+        assert headers["Content-Type"] == "application/json"
+        data = json.loads(body)
+        assert data["status"] == "open"
+        assert data["stale"] is False
+        assert data["consecutive_errors"] == 0
+        assert data["muted_until"] is None
+        assert data["last_check"] is not None and data["last_change"] is not None
+        # read-only: no snapshot, no AI, no Telegram, no writes
+        mock_blink_cls.assert_not_called()
+        mock_gem_cls.assert_not_called()
+        mock_tg_cls.assert_not_called()
+        store.save_state.assert_not_called()
+        store.increment_usage.assert_not_called()
+        store.save_event.assert_not_called()
+
+    @patch("garage_monitor.main.Settings")
+    @patch("garage_monitor.main.FirestoreStore")
+    def test_stale_when_last_check_old(self, mock_store_cls, mock_settings_cls):
+        import json
+
+        mock_settings_cls.return_value = _make_settings(status_token="tok-123")
+        store = MagicMock()
+        store.get_state.return_value = GarageState(
+            current_status=GarageStatus.CLOSED,
+            last_check_time=datetime.now(timezone.utc) - timedelta(minutes=STALENESS_MARGIN + 5),
+        )
+        mock_store_cls.return_value = store
+
+        body, status_code, _ = check_garage(self._request("Bearer tok-123"))
+
+        assert status_code == 200
+        assert json.loads(body)["stale"] is True
+
+    @patch("garage_monitor.main.Settings")
+    @patch("garage_monitor.main.FirestoreStore")
+    def test_no_state_yet(self, mock_store_cls, mock_settings_cls):
+        import json
+
+        mock_settings_cls.return_value = _make_settings(status_token="tok-123")
+        store = MagicMock()
+        store.get_state.return_value = None
+        mock_store_cls.return_value = store
+
+        body, status_code, _ = check_garage(self._request("Bearer tok-123"))
+
+        data = json.loads(body)
+        assert status_code == 200
+        assert data["status"] == "unknown"
+        assert data["stale"] is True
+        assert data["last_check"] is None
+

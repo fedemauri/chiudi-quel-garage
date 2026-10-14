@@ -64,6 +64,7 @@ deploy.sh              # Full deploy: Cloud Function + Scheduler jobs
 | `GM_FIRESTORE_COLLECTION` | no | `garage_monitor` | Firestore collection name |
 | `GM_TELEGRAM_WEBHOOK_SECRET` | no | `""` | Secret for Telegram webhook validation (required for bot commands) |
 | `GM_GEMINI_COST_ALERT_THRESHOLD` | no | `3.0` | Monthly Gemini cost alert threshold ($) |
+| `GM_STATUS_TOKEN` | no | `""` | Bearer token for the read-only `?action=status` endpoint (Home Assistant). Empty = endpoint disabled |
 
 ## Development Commands
 

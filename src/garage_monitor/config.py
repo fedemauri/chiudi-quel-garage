@@ -17,3 +17,4 @@ class Settings(BaseSettings):
     firestore_collection: str = "garage_monitor"
     gemini_cost_alert_threshold: float = 3.0
     telegram_webhook_secret: str = ""
+    status_token: str = ""  # read-only ?action=status for Home Assistant; empty = disabled

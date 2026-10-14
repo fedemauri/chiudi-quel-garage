@@ -177,6 +177,7 @@ Edit `.env` and fill in all values. Every variable uses the `GM_` prefix:
 | `GM_FIRESTORE_COLLECTION` | no | `garage_monitor` | Firestore collection name. Change only if running multiple instances |
 | `GM_TELEGRAM_WEBHOOK_SECRET` | no | `""` | Secret token for Telegram webhook validation. Required to enable interactive bot commands. Generate with `openssl rand -hex 32` |
 | `GM_GEMINI_COST_ALERT_THRESHOLD` | no | `3.0` | Monthly projected Gemini cost threshold ($) — triggers a warning in the `/report` output if exceeded |
+| `GM_STATUS_TOKEN` | no | `""` | Bearer token for the read-only `GET ?action=status` endpoint used by Home Assistant. Reads only the Firestore state (no Blink, no AI, no Telegram). Empty = disabled. Generate with `openssl rand -hex 32` |
 
 ### Step 5 — Blink Authentication (one-time, interactive)
 
