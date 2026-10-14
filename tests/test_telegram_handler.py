@@ -24,6 +24,8 @@ def _make_settings(**overrides):
         "firestore_collection": "garage_monitor",
         "gemini_cost_alert_threshold": 3.0,
         "telegram_webhook_secret": "test-secret",
+        "status_token": "",
+        "scheduler_token": "",
     }
     defaults.update(overrides)
     settings = MagicMock()

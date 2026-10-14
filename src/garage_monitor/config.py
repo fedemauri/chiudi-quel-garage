@@ -5,7 +5,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="GM_")
 
     blink_username: str
-    blink_password: str
+    blink_password: str = ""  # only needed by scripts/setup_blink.py, not at runtime
     blink_camera_name: str = "Garage"
     analyzer: str = "gemini"  # "gemini" or "tflite"
     gemini_api_key: str = ""
@@ -17,4 +17,5 @@ class Settings(BaseSettings):
     firestore_collection: str = "garage_monitor"
     gemini_cost_alert_threshold: float = 3.0
     telegram_webhook_secret: str = ""
+    scheduler_token: str = ""  # X-Scheduler-Token required for checks/report; empty = open (legacy)
     status_token: str = ""  # read-only ?action=status for Home Assistant; empty = disabled

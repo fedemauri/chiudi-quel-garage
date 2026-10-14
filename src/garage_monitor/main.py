@@ -298,6 +298,18 @@ def _handle_status_request(request, settings: Settings):
     return json.dumps(body), 200, {"Content-Type": "application/json", "Cache-Control": "no-store"}
 
 
+def _scheduler_authorized(request, settings: Settings) -> bool:
+    """Checks and reports may only be triggered by Cloud Scheduler (X-Scheduler-Token).
+
+    With GM_SCHEDULER_TOKEN empty the function stays open as before (legacy deploys).
+    """
+    if not settings.scheduler_token:
+        logger.warning("GM_SCHEDULER_TOKEN not set: check endpoint is open to anyone")
+        return True
+    token = request.headers.get("X-Scheduler-Token", "")
+    return hmac.compare_digest(token.encode(), settings.scheduler_token.encode())
+
+
 def _handle_telegram_webhook(request, body: dict, settings: Settings):
     """Validate and dispatch Telegram webhook requests."""
     # Webhook disabled if secret not configured
@@ -306,7 +318,7 @@ def _handle_telegram_webhook(request, body: dict, settings: Settings):
 
     # Validate secret token header
     secret = request.headers.get("X-Telegram-Bot-Api-Secret-Token", "")
-    if secret != settings.telegram_webhook_secret:
+    if not hmac.compare_digest(secret.encode(), settings.telegram_webhook_secret.encode()):
         return "INVALID_SECRET", 403
 
     # Extract chat_id from message or callback_query
@@ -333,6 +345,8 @@ def check_garage(request):
     action = request.args.get("action")
     if action == "status":
         return _handle_status_request(request, settings)
+    if not _scheduler_authorized(request, settings):
+        return "UNAUTHORIZED", 403
     if action == "report":
         _send_usage_report(settings)
         return "REPORT_SENT", 200

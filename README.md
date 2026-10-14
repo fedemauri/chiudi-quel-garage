@@ -165,7 +165,7 @@ Edit `.env` and fill in all values. Every variable uses the `GM_` prefix:
 | Variable | Required | Default | Description |
 |---|---|---|---|
 | `GM_BLINK_USERNAME` | yes | — | Email address of your Blink account |
-| `GM_BLINK_PASSWORD` | yes | — | Password of your Blink account |
+| `GM_BLINK_PASSWORD` | setup only | — | Password of your Blink account |
 | `GM_BLINK_CAMERA_NAME` | no | `Garage` | Exact camera name as displayed in the Blink app |
 | `GM_ANALYZER` | no | `gemini` | Analyzer backend: `gemini` (cloud AI, paid) or `tflite` (local MobileNetV2, free). See [TFLite Model](docs/TFLITE_MODEL.md) |
 | `GM_GEMINI_API_KEY` | conditional | — | API key from Google AI Studio. Required only when `GM_ANALYZER=gemini` |
@@ -178,6 +178,7 @@ Edit `.env` and fill in all values. Every variable uses the `GM_` prefix:
 | `GM_TELEGRAM_WEBHOOK_SECRET` | no | `""` | Secret token for Telegram webhook validation. Required to enable interactive bot commands. Generate with `openssl rand -hex 32` |
 | `GM_GEMINI_COST_ALERT_THRESHOLD` | no | `3.0` | Monthly projected Gemini cost threshold ($) — triggers a warning in the `/report` output if exceeded |
 | `GM_STATUS_TOKEN` | no | `""` | Bearer token for the read-only `GET ?action=status` endpoint used by Home Assistant. Reads only the Firestore state (no Blink, no AI, no Telegram). Empty = disabled. Generate with `openssl rand -hex 32` |
+| `GM_SCHEDULER_TOKEN` | recommended | `""` | Secret header `X-Scheduler-Token` sent by Cloud Scheduler. When set, checks and `?action=report` without it get 403 (no Blink snapshot). Empty = open (legacy). Generate with `openssl rand -hex 32` |
 
 ### Step 5 — Blink Authentication (one-time, interactive)
 

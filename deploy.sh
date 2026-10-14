@@ -12,9 +12,15 @@ if [ -f .env ]; then
     set +a
 fi
 
+# GM_BLINK_PASSWORD is only used by scripts/setup_blink.py: it is not sent to the function.
+# GM_SCHEDULER_TOKEN: without it anyone with the function URL can trigger checks (Blink snapshots).
+if [ -z "${GM_SCHEDULER_TOKEN:-}" ]; then
+    echo "WARNING: GM_SCHEDULER_TOKEN non impostata: chiunque conosca l'URL puo' far partire un controllo"
+fi
+
 # Validate required vars
 REQUIRED_VARS=(
-    GM_BLINK_USERNAME GM_BLINK_PASSWORD GM_BLINK_CAMERA_NAME
+    GM_BLINK_USERNAME GM_BLINK_CAMERA_NAME
     GM_TELEGRAM_BOT_TOKEN GM_TELEGRAM_CHAT_ID
     GM_GCP_PROJECT_ID
 )
@@ -51,7 +57,7 @@ gcloud functions deploy "$FUNCTION_NAME" \
     --allow-unauthenticated \
     --memory=512Mi \
     --timeout=120s \
-    --set-env-vars="GM_ANALYZER=${GM_ANALYZER:-gemini},GM_BLINK_USERNAME=$GM_BLINK_USERNAME,GM_BLINK_PASSWORD=$GM_BLINK_PASSWORD,GM_BLINK_CAMERA_NAME=${GM_BLINK_CAMERA_NAME:-Garage},GM_GEMINI_API_KEY=${GM_GEMINI_API_KEY:-},GM_GEMINI_MODEL=${GM_GEMINI_MODEL:-gemini-2.5-flash},GM_CONFIDENCE_THRESHOLD=${GM_CONFIDENCE_THRESHOLD:-0.7},GM_TELEGRAM_BOT_TOKEN=$GM_TELEGRAM_BOT_TOKEN,GM_TELEGRAM_CHAT_ID=$GM_TELEGRAM_CHAT_ID,GM_GCP_PROJECT_ID=$PROJECT_ID,GM_FIRESTORE_COLLECTION=${GM_FIRESTORE_COLLECTION:-garage_monitor},GM_TELEGRAM_WEBHOOK_SECRET=${GM_TELEGRAM_WEBHOOK_SECRET:-},GM_GEMINI_COST_ALERT_THRESHOLD=${GM_GEMINI_COST_ALERT_THRESHOLD:-3.0},GM_STATUS_TOKEN=${GM_STATUS_TOKEN:-}"
+    --set-env-vars="GM_ANALYZER=${GM_ANALYZER:-gemini},GM_BLINK_USERNAME=$GM_BLINK_USERNAME,GM_BLINK_CAMERA_NAME=${GM_BLINK_CAMERA_NAME:-Garage},GM_GEMINI_API_KEY=${GM_GEMINI_API_KEY:-},GM_GEMINI_MODEL=${GM_GEMINI_MODEL:-gemini-2.5-flash},GM_CONFIDENCE_THRESHOLD=${GM_CONFIDENCE_THRESHOLD:-0.7},GM_TELEGRAM_BOT_TOKEN=$GM_TELEGRAM_BOT_TOKEN,GM_TELEGRAM_CHAT_ID=$GM_TELEGRAM_CHAT_ID,GM_GCP_PROJECT_ID=$PROJECT_ID,GM_FIRESTORE_COLLECTION=${GM_FIRESTORE_COLLECTION:-garage_monitor},GM_TELEGRAM_WEBHOOK_SECRET=${GM_TELEGRAM_WEBHOOK_SECRET:-},GM_GEMINI_COST_ALERT_THRESHOLD=${GM_GEMINI_COST_ALERT_THRESHOLD:-3.0},GM_STATUS_TOKEN=${GM_STATUS_TOKEN:-},GM_SCHEDULER_TOKEN=${GM_SCHEDULER_TOKEN:-}"
 
 FUNCTION_URL=$(gcloud functions describe "$FUNCTION_NAME" --gen2 --region="$REGION" --format='value(serviceConfig.uri)')
 echo "Function URL: $FUNCTION_URL"
@@ -77,11 +83,16 @@ gcloud scheduler jobs create http "$SCHEDULER_JOB" \
     --uri="$FUNCTION_URL" \
     --http-method=POST \
     --oidc-service-account-email="$SA_EMAIL" \
-    --oidc-token-audience="$FUNCTION_URL"
+    --oidc-token-audience="$FUNCTION_URL" \
+    ${GM_SCHEDULER_TOKEN:+--headers="X-Scheduler-Token=$GM_SCHEDULER_TOKEN"}
 
 echo ""
-echo ">>> Test invocazione manuale..."
-gcloud functions call "$FUNCTION_NAME" --gen2 --region="$REGION" || echo "Test fallito, controlla i log."
+echo ">>> Test: esecuzione manuale del job Scheduler (stesso percorso, con token)..."
+gcloud scheduler jobs run "$SCHEDULER_JOB" --location="$REGION" || echo "Test fallito, controlla i log."
+if [ -n "${GM_SCHEDULER_TOKEN:-}" ]; then
+    CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$FUNCTION_URL")
+    echo ">>> Chiamata senza token: HTTP $CODE (atteso 403)"
+fi
 
 echo ""
 echo "=== Deploy completato! ==="

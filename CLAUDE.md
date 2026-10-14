@@ -52,7 +52,7 @@ deploy.sh              # Full deploy: Cloud Function + Scheduler jobs
 | Variable | Required | Default | Description |
 |---|---|---|---|
 | `GM_BLINK_USERNAME` | yes | - | Blink account email |
-| `GM_BLINK_PASSWORD` | yes | - | Blink account password |
+| `GM_BLINK_PASSWORD` | setup only | - | Blink account password |
 | `GM_BLINK_CAMERA_NAME` | no | `Garage` | Camera name in Blink app |
 | `GM_ANALYZER` | no | `gemini` | Analyzer backend: `gemini` (cloud AI, paid) or `tflite` (local ML, free) |
 | `GM_GEMINI_API_KEY` | conditional | - | Gemini API key (required only when `GM_ANALYZER=gemini`) |
@@ -65,6 +65,7 @@ deploy.sh              # Full deploy: Cloud Function + Scheduler jobs
 | `GM_TELEGRAM_WEBHOOK_SECRET` | no | `""` | Secret for Telegram webhook validation (required for bot commands) |
 | `GM_GEMINI_COST_ALERT_THRESHOLD` | no | `3.0` | Monthly Gemini cost alert threshold ($) |
 | `GM_STATUS_TOKEN` | no | `""` | Bearer token for the read-only `?action=status` endpoint (Home Assistant). Empty = endpoint disabled |
+| `GM_SCHEDULER_TOKEN` | recommended | `""` | Secret header `X-Scheduler-Token` sent by Cloud Scheduler. When set, checks and `?action=report` without it get 403 (no Blink snapshot). Empty = open (legacy). Generate with `openssl rand -hex 32` |
 
 ## Development Commands
 

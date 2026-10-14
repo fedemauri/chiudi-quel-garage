@@ -36,6 +36,7 @@ def _make_settings(**overrides):
         "gemini_cost_alert_threshold": 3.0,
         "telegram_webhook_secret": "test-secret",
         "status_token": "",
+        "scheduler_token": "",
     }
     defaults.update(overrides)
     settings = MagicMock()
@@ -992,4 +993,73 @@ class TestStatusEndpoint:
         assert data["status"] == "unknown"
         assert data["stale"] is True
         assert data["last_check"] is None
+
+
+class TestSchedulerToken:
+    """Checks and reports require X-Scheduler-Token when GM_SCHEDULER_TOKEN is set."""
+
+    def _request(self, action=None, token=None):
+        request = MagicMock()
+        request.content_type = None
+        request.args = {"action": action} if action else {}
+        request.headers = {"X-Scheduler-Token": token} if token is not None else {}
+        return request
+
+    @patch("garage_monitor.main._check_garage_async", new_callable=AsyncMock)
+    @patch("garage_monitor.main.Settings")
+    @pytest.mark.parametrize("token", [None, "", "wrong"])
+    def test_check_refused_without_valid_token(self, mock_settings_cls, mock_check, token):
+        mock_settings_cls.return_value = _make_settings(scheduler_token="sched-1")
+        assert check_garage(self._request(token=token)) == ("UNAUTHORIZED", 403)
+        mock_check.assert_not_called()
+
+    @patch("garage_monitor.main._check_garage_async", new_callable=AsyncMock)
+    @patch("garage_monitor.main.Settings")
+    def test_check_runs_with_valid_token(self, mock_settings_cls, mock_check):
+        mock_settings_cls.return_value = _make_settings(scheduler_token="sched-1")
+        mock_check.return_value = "OK"
+        assert check_garage(self._request(token="sched-1")) == ("OK", 200)
+        mock_check.assert_called_once()
+
+    @patch("garage_monitor.main._send_usage_report")
+    @patch("garage_monitor.main.Settings")
+    def test_report_refused_without_token(self, mock_settings_cls, mock_report):
+        mock_settings_cls.return_value = _make_settings(scheduler_token="sched-1")
+        assert check_garage(self._request(action="report")) == ("UNAUTHORIZED", 403)
+        mock_report.assert_not_called()
+
+    @patch("garage_monitor.main._check_garage_async", new_callable=AsyncMock)
+    @patch("garage_monitor.main.Settings")
+    def test_legacy_open_when_token_not_set(self, mock_settings_cls, mock_check):
+        mock_settings_cls.return_value = _make_settings(scheduler_token="")
+        mock_check.return_value = "OK"
+        assert check_garage(self._request()) == ("OK", 200)
+
+    @patch("garage_monitor.main.Settings")
+    @patch("garage_monitor.main.FirestoreStore")
+    def test_status_does_not_need_scheduler_token(self, mock_store_cls, mock_settings_cls):
+        mock_settings_cls.return_value = _make_settings(scheduler_token="sched-1", status_token="tok-123")
+        store = MagicMock()
+        store.get_state.return_value = None
+        mock_store_cls.return_value = store
+        request = MagicMock()
+        request.content_type = None
+        request.args = {"action": "status"}
+        request.headers = {"Authorization": "Bearer tok-123"}
+        _, status_code, _ = check_garage(request)
+        assert status_code == 200
+
+
+def test_settings_without_blink_password(monkeypatch):
+    from garage_monitor.config import Settings
+
+    for key in ["GM_BLINK_PASSWORD"]:
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("GM_BLINK_USERNAME", "u@example.com")
+    monkeypatch.setenv("GM_TELEGRAM_BOT_TOKEN", "t")
+    monkeypatch.setenv("GM_TELEGRAM_CHAT_ID", "1")
+    monkeypatch.setenv("GM_GCP_PROJECT_ID", "p")
+    settings = Settings()
+    assert settings.blink_password == ""
+    assert settings.scheduler_token == ""
 
