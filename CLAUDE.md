@@ -37,7 +37,9 @@ scripts/
   setup_blink.py             # Interactive Blink 2FA auth, saves credentials to Firestore
   test_telegram.py           # Verify Telegram bot + chat ID
   setup_telegram_webhook.py  # Register/delete Telegram webhook for bot commands
-  train_model.py             # TFLite model training pipeline (MobileNetV2 transfer learning)
+  import_telegram_export.py  # Build training dataset from a Telegram Desktop chat export (JSON or HTML)
+  review_dataset.py          # Local review page (127.0.0.1) to set final labels in manifest.csv
+  train_model.py             # TFLite model evaluation/training pipeline (MobileNetV2 transfer learning)
   compare_models.py          # Compare multiple Gemini models on test images
   test_heuristic.py          # Heuristic-based garage door detection test
 tests/                       # pytest tests
@@ -88,11 +90,14 @@ gcloud functions logs read check-garage --gen2 --region=europe-west1
 # Manual trigger
 gcloud scheduler jobs run garage-monitor --location=europe-west1
 
-# TFLite model: train and export (requires full TensorFlow locally)
-pip install "tensorflow>=2.16" Pillow scipy
-python scripts/train_model.py --train       # Train + export to model/garage_classifier.tflite
-python scripts/train_model.py --predict /path/to/image.jpg  # Test on single image
-python scripts/train_model.py --export      # Re-export .keras to .tflite without retraining
+# TFLite model retraining (dataset = photos the bot sent on Telegram; see docs/TFLITE_MODEL.md)
+python3.12 scripts/import_telegram_export.py "<Telegram Desktop export dir>"  # -> data/telegram/
+python3.12 scripts/review_dataset.py        # review page, saves final_label to manifest.csv
+python3.12 -m venv .venv-train && .venv-train/bin/pip install "tensorflow==2.16.2" Pillow scipy
+.venv-train/bin/python scripts/train_model.py --evaluate   # temporal split, new vs current model
+.venv-train/bin/python scripts/train_model.py --train      # final model -> model/garage_classifier.tflite
+.venv-train/bin/python scripts/train_model.py --predict /path/to/image.jpg
+.venv-train/bin/python scripts/train_model.py --export     # Re-export .keras to .tflite without retraining
 ```
 
 ## Architecture Notes

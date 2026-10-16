@@ -9,7 +9,7 @@ The system supports two pluggable analyzer backends for classifying the garage d
 | How it works | Sends JPEG to Gemini cloud API with a structured prompt; receives JSON `{status, confidence, reasoning}` | Loads a pre-trained MobileNetV2 binary classifier and runs inference locally on the Cloud Function CPU |
 | Cost | ~$0.30/M input tokens, ~$2.50/M output tokens (paid) | Free — no API calls, no tokens |
 | Latency | 1–3 seconds (network round-trip + API processing) | ~50–100 ms (CPU-only inference, no network) |
-| Accuracy | High, but subject to occasional unpredictable false positives (LLM hallucinations) | 90%+ on real production images; deterministic — same input always gives same output |
+| Accuracy | High, but subject to occasional unpredictable false positives (LLM hallucinations) | 99.5% on the latest two months of production photos (Oct 2026 model); deterministic — same input always gives same output |
 | Dependencies | `google-genai` | `ai-edge-litert` (Python ≥3.12) or `tflite-runtime` (Python <3.12) + `Pillow` |
 | Model size | None (cloud API) | 4.4 MB file (`model/garage_classifier.tflite`) — deployed alongside the function code |
 | Reasoning output | Italian text explanation from Gemini (e.g., "Pannelli visibili, porta chiusa") | Synthetic text with raw probability (e.g., "Porta chiusa (p=0.97)") |
@@ -48,11 +48,12 @@ In this project, MobileNetV2 is used as a frozen feature extractor. A custom bin
 
 ## Model Architecture (detailed)
 
-The full model is a `keras.Sequential` stack:
+The full model is a Keras functional model (input: 224×224×3 float32 in [0, 1]):
 
 ```
 Layer                           Output Shape       Parameters    Trainable
 ──────────────────────────────────────────────────────────────────────────
+Rescaling(2, offset=-1)         (None, 224, 224, 3) 0            -
 MobileNetV2 (base)              (None, 7, 7, 1280) ~2.2M         Partially*
 GlobalAveragePooling2D          (None, 1280)        0             -
 Dropout(0.3)                    (None, 1280)        0             -
@@ -61,11 +62,11 @@ Dropout(0.2)                    (None, 64)          0             -
 Dense(1, activation="sigmoid")  (None, 1)           65            Yes
 ```
 
-\* During Phase 1 training, MobileNetV2 is fully frozen. During Phase 2 fine-tuning, the last 20 layers are unfrozen.
+\* During Phase 1 training, MobileNetV2 is fully frozen. During Phase 2 fine-tuning, block 16 and `Conv_1` are trained (BatchNorm layers stay frozen).
 
 **Why this architecture:**
 - `GlobalAveragePooling2D` collapses the 7×7×1280 feature maps into a 1280-dimensional vector, reducing parameters and preventing overfitting
-- Two `Dropout` layers (0.3 and 0.2) provide regularization — critical with a small dataset (~140 images)
+- Two `Dropout` layers (0.3 and 0.2) provide regularization — important with a single-camera dataset of ~2000 photos
 - A single hidden `Dense(64)` layer provides enough capacity for binary classification without overfitting
 - Final `Dense(1, sigmoid)` outputs a single probability: 0.0 = definitely closed, 1.0 = definitely open
 
@@ -142,122 +143,98 @@ Training is done locally, not on the Cloud Function. The script is `scripts/trai
 ### Prerequisites
 
 ```bash
-pip install "tensorflow>=2.16" Pillow scipy
+python3.12 -m venv .venv-train
+.venv-train/bin/pip install "tensorflow==2.16.2" Pillow scipy
 ```
 
-Note: Training requires full TensorFlow (not just tflite-runtime). TensorFlow is only needed locally for training — it is NOT deployed to the Cloud Function.
+TensorFlow 2.16.2 is the last release with macOS x86_64 (Intel) wheels; it is only needed locally and is NOT deployed to the Cloud Function. Training is CPU-only and designed for it (see below): on an i7-6700HQ the full run takes ~20 minutes.
 
-### Dataset structure
+### Dataset
 
-Images are organized in a directory-based layout:
+The dataset is built from the photos the bot sent on Telegram (see [Retraining the Model](#retraining-the-model)): `data/telegram/manifest.csv` lists every photo and its `final_label` set during review. Only `open` / `closed` photos are used (`exclude` and unlabeled ones are skipped). The task is binary: **a door open even a few cm is `open`**.
 
-```
-data/images/
-  closed/        # Images where the garage door is closed
-    IMG_0001.jpg
-    IMG_0002.jpg
-    ...
-  open/          # Images where the garage door is open
-    IMG_0100.jpg
-    IMG_0101.jpg
-    ...
-```
+The October 2026 dataset has 2101 photos (1110 open, 991 closed) from March to October 2026: daytime color, night infrared, garage light on, color casts, people and other cars in frame, the door mid-travel, and two camera positions.
 
-The training script automatically discovers all images (`.jpg`, `.jpeg`, `.png`, `.bmp`, `.webp`) in these directories and assigns labels based on the parent directory name. Currently the dataset contains ~140 labeled images from the Blink Mini camera, covering:
+### Preprocessing
 
-- Daytime (color images with natural light)
-- Nighttime IR (black & white infrared images)
-- Dusk / low-light transitions
-- Night with garage light on (color, artificial light)
-- With and without car in frame
-- Various door positions (fully open, fully closed)
+Inputs are exactly what `TFLiteAnalyzer` feeds in production: `PIL.Image.open(...).convert("RGB").resize((224, 224))`, float32 in [0, 1]. The model starts with a `Rescaling(2, offset=-1)` layer that maps them to the [-1, 1] range MobileNetV2 was pre-trained on (the model before October 2026 skipped this step and fed [0, 1] directly).
+
+### Cached backbone features (why it is fast on CPU)
+
+MobileNetV2 is frozen up to `block_15_add`. Its activations (7×7×160 per image) are computed once for every photo and for 5 augmented copies of each training photo, then cached in `data/telegram/cache/`. Only block 16, `Conv_1` and the classification head are trained, on the cached activations — each epoch takes ~20 s instead of minutes. The layers above `block_15_add` are a plain chain; `build_models()` checks numerically that `top(bottom(x)) == full(x)` before training.
 
 ### Data augmentation
 
-Because the dataset is small (~140 images), aggressive augmentation is applied during training:
+Applied on the full-resolution photo before resizing, to mimic real camera conditions: rotation ±4° and random crop 82–100% (camera nudged), color saturation, random color cast (per-channel gains), 20% grayscale (night infrared), brightness ±35%, contrast ±30%, light blur, JPEG recompression. No horizontal flip: the camera is fixed and a mirrored garage never occurs.
 
-```python
-tf.image.random_flip_left_right(image)     # horizontal flip
-tf.image.random_brightness(image, 0.3)     # brightness ±30%
-tf.image.random_contrast(image, 0.7, 1.3)  # contrast variation
-tf.image.random_saturation(image, 0.7, 1.3) # saturation variation
-```
+### Weights
 
-This effectively multiplies the training set by generating varied versions of each image on every epoch, helping the model generalize to different lighting conditions.
-
-### Class weight balancing
-
-The training script computes class weights inversely proportional to class frequency:
-
-```python
-class_weight = {
-    0: n_total / (2 * n_closed),  # weight for "closed"
-    1: n_total / (2 * n_open),    # weight for "open"
-}
-```
-
-This ensures the model doesn't become biased toward the majority class if the dataset is imbalanced (e.g., more "closed" images than "open" ones).
+Class weights balance open/closed. Photos where the door is only **slightly open** (review label `partial`, or the reviewer overrode "closed" with "open") get weight ×2: they are the risky cases.
 
 ### Training process (2 phases)
 
-**Phase 1 — Head training (up to 30 epochs, LR=0.0005):**
-- MobileNetV2 base is completely frozen (`trainable = False`)
-- Only the classification head layers are trained (GlobalAveragePooling2D + Dense layers)
-- Uses Adam optimizer with binary cross-entropy loss
-- EarlyStopping monitors `val_loss` with patience=8 and restores best weights
+1. **Head** (GAP → Dropout 0.3 → Dense 64 → Dropout 0.2 → Dense 1 sigmoid): Adam 1e-3, up to 40 epochs.
+2. **Fine-tuning** of block 16 + `Conv_1` + head: Adam 5e-5, up to 30 epochs. BatchNorm layers stay frozen (inference mode).
 
-**Phase 2 — Fine-tuning (up to 20 epochs, LR=0.00005):**
-- The last 20 layers of MobileNetV2 are unfrozen (`base_model.layers[:-20]` stay frozen)
-- Learning rate is reduced 10× to avoid destroying pre-trained features
-- Same EarlyStopping settings
-- This allows the model to adapt MobileNetV2's higher-level features to the specific camera perspective
+Both phases use EarlyStopping on `val_loss` (patience 6, best weights restored). Seeds are fixed (42).
 
-All random seeds are fixed (`random.seed(42)`, `np.random.seed(42)`, `tf.random.set_seed(42)`) for reproducible results.
+### Evaluation (`--evaluate`)
 
-### Train/validation split
+Photos are split **by date**, not randomly: consecutive photos of the same opening are near-identical, and a random split would leak them between train and test. Default: train until July, validation August (early stopping), test September–October. The new model and the current `model/garage_classifier.tflite` are scored on the same test photos, reporting errors, missed openings, slightly-open recall, photos below the production confidence threshold (0.7) and *confident errors* (wrong and above 0.7, i.e. a wrong notification in production).
 
-80/20 stratified split: 20% of each class (open, closed) is held out for validation. This ensures both classes are represented in the validation set.
+October 2026 results on the September–October test set (185 photos, never seen in training):
 
-### TFLite export
+| | Previous model | New model |
+|---|---|---|
+| Accuracy | 96.8% | 99.5% |
+| Errors | 6 (5 missed openings) | 1 (a half-open door at night, p_open = 0.33) |
+| Confident errors | 6 | 0 |
 
-After training, the model is automatically exported to TFLite via an intermediate SavedModel (required for Keras 3 compatibility):
+### Final model (`--train`)
 
-```python
-model.export(saved_model_path)          # Keras 3 → SavedModel
-converter = tf.lite.TFLiteConverter.from_saved_model(saved_model_path)
-converter.optimizations = [tf.lite.Optimize.DEFAULT]
-converter.target_spec.supported_types = [tf.float16]
-tflite_model = converter.convert()      # SavedModel → TFLite (float16)
-```
-
-The exported model is saved to `model/garage_classifier.tflite` and a Keras checkpoint is saved to `model/garage_classifier.keras` for future fine-tuning.
+Trained on all periods, holding out 10% of random whole days for early stopping only. It is saved as `model/garage_classifier.keras` and exported to `model/garage_classifier.tflite` (float16 via SavedModel, ~4.4 MB); the script then checks that the `.tflite` file gives the same decisions as the Keras model on the held-out days.
 
 ## Retraining the Model
 
-### 1. Add labeled images
+### 1. Collect and label photos
 
-Place new JPEG/PNG images in the appropriate directory:
 
-```bash
-# For closed door images:
-cp new_image.jpg data/images/closed/
-
-# For open door images:
-cp new_image.jpg data/images/open/
-```
-
-### 2. Train and export
+Every photo the bot sent is a labeled sample. The Bot API cannot read chat history, so export it from **Telegram Desktop**: bot chat → ⋮ → *Export chat history* → only *Photos* (JSON or HTML format). Then:
 
 ```bash
-python scripts/train_model.py --train
+python scripts/import_telegram_export.py <export_dir> --dry-run   # summary only (JSON or HTML export)
+python scripts/import_telegram_export.py <export_dir>              # writes data/telegram/
 ```
 
-This will:
-- Load all images from `data/images/{open,closed}/`
-- Split 80/20 into train/validation (stratified by class)
-- Train in 2 phases (head only, then fine-tuning)
-- Print per-image validation results and full-dataset accuracy
-- Export to `model/garage_classifier.tflite`
+Photos are labeled from their caption (status change, night alert, reminder, final warning → `open`; status change to closed → `closed`; `/foto` → `unlabeled`) and copied to `data/telegram/{open,closed,unlabeled}/` as `YYYYMMDD_HHMMSS_<msgid>.jpg`. Exact duplicates and near-identical reminders (dHash, `--near-dup-threshold`) are skipped; status-change photos are always kept.
+
+Captions record what the model decided, not ground truth. `data/telegram/manifest.csv` flags photos worth reviewing before training:
+
+| Flag | Meaning |
+|---|---|
+| `short_closed` | Closed, then reopened within `--flip-minutes` (default 10): one of the two is likely wrong. Short *open* spells are normal and not flagged |
+| `low_confidence` | Caption confidence below `--low-confidence` (default 0.85) |
+| `reminder_while_closed` | "Still open" reminder sent after a change to closed |
+| `unlabeled` | `/foto` snapshot or unrecognized caption: needs a label |
+
+Fill `review_label` / `review_note` during review. `data/` is git-ignored (private photos).
+
+To decide the final labels, run the local review page (127.0.0.1 only, photos never leave the machine):
+
+```bash
+python scripts/review_dataset.py   # opens http://127.0.0.1:8765/
+```
+
+It shows a filterable grid (default view: photos to check — model/review disagreements, partial doors, suspicious flags, uncertain notes) and a large viewer with keys `A` open, `C` closed, `X` exclude, `Enter` accept the review label, `←/→` navigate. The task is binary: a door open even a few cm is **open** (review labels `partial` are proposed as open). Each decision is saved immediately to the `final_label` / `final_note` columns of `manifest.csv` (a `manifest.backup.csv` copy is made on first start).
+
+### 2. Evaluate, then train and export
+
+```bash
+.venv-train/bin/python scripts/train_model.py --evaluate   # new vs current model on the latest months
+.venv-train/bin/python scripts/train_model.py --train      # final model on all data -> model/garage_classifier.tflite
+```
+
+Deploy only if `--evaluate` shows the new model is better than the current one.
 
 ### 3. Test on a single image
 
@@ -299,22 +276,25 @@ Example: if the TFLite model outputs 0.55 (meaning "open" with only 55% confiden
 model/
   garage_classifier.tflite    # 4.4 MB — deployed with the Cloud Function
   garage_classifier.keras     # ~20 MB — Keras checkpoint for retraining (not deployed)
-data/images/                  # Training images (not committed to git)
-  open/                       # Images of open garage door
-  closed/                     # Images of closed garage door
+data/telegram/                # Reviewed dataset (not committed to git: private photos)
+  open/ closed/ unlabeled/    # Photos imported from the Telegram export
+  manifest.csv                # Labels, flags, review and final decisions
+  cache/                      # Cached backbone features
 src/garage_monitor/
   tflite_analyzer.py          # TFLite inference wrapper (TFLiteAnalyzer class)
   gemini_analyzer.py          # Gemini API wrapper (GeminiAnalyzer class)
   config.py                   # GM_ANALYZER setting (config.analyzer field)
   main.py                     # Analyzer switch: if settings.analyzer == "tflite" → TFLiteAnalyzer()
 scripts/
-  train_model.py              # Training, export, and single-image prediction
+  import_telegram_export.py   # Build the dataset from a Telegram Desktop export
+  review_dataset.py           # Local review page (with review_ui.html)
+  train_model.py              # Evaluation, training, export, and single-image prediction
 ```
 
 ## Known Limitations
 
-- **Transition frames**: The model may misclassify images where the door is mid-opening/closing (10–20% open). This is irrelevant in production since snapshots are taken every 5 minutes and the door takes ~15 seconds to open/close.
-- **Partially open**: Images with the door ~50% open may be classified as closed with moderate confidence. The confidence threshold helps filter these.
-- **Camera-specific**: The model is trained on images from one specific Blink Mini camera in one specific position. If the camera is moved or replaced, the model will likely need retraining with images from the new perspective.
+- **Slightly open doors**: A door raised a few cm is the hardest case (and must be `open`). The training set weights these ×2; the confidence threshold keeps uncertain predictions from changing state.
+- **Camera-specific**: The model is trained on one Blink Mini camera (two positions in 2026). If the camera is moved or replaced, retrain with photos from the new perspective — the previous model degraded after the camera moved in autumn 2026.
+- **Dataset bias**: Photos only exist when the bot sent one (state changes, reminders, `/foto`). An open door the model kept calling "closed" produced no photo, so those errors are invisible in the dataset.
 - **No semantic reasoning**: Unlike Gemini, the TFLite model cannot explain *why* it classified an image a certain way. It only provides a probability score. The `reasoning` field contains a synthetic string with the raw probability, not a human explanation.
 - **Training environment**: Full TensorFlow (~2 GB) is required for training. Only the lightweight TFLite runtime (~15 MB) is needed for inference at runtime.

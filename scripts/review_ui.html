@@ -1,0 +1,350 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Revisione foto garage</title>
+<style>
+  :root {
+    --bg: #f4f3ef; --panel: #ffffff; --ink: #1d1d1b; --muted: #6b6a64; --line: #dcdad3;
+    --open: #d1495b; --closed: #2e8b57; --partial: #e09f3e; --exclude: #7d7d7d;
+    --accent: #2b59c3; --focus: #2b59c3;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #151515; --panel: #1f1f1e; --ink: #ecebe6; --muted: #9c9b94; --line: #353533;
+      --open: #ef6f7d; --closed: #4fbf7f; --partial: #f0b65a; --exclude: #9a9a9a;
+      --accent: #7aa2ff; --focus: #7aa2ff;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+         font: 14px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+  header { position: sticky; top: 0; z-index: 5; background: var(--panel); border-bottom: 1px solid var(--line);
+           padding: 12px 16px; display: flex; flex-wrap: wrap; gap: 10px 18px; align-items: center; }
+  h1 { font-size: 17px; margin: 0; font-weight: 650; }
+  .stats { display: flex; gap: 12px; flex-wrap: wrap; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .stats b { color: var(--ink); }
+  .progress { flex: 1 1 160px; min-width: 140px; height: 8px; background: var(--line); border-radius: 4px; overflow: hidden; }
+  .progress > div { height: 100%; background: var(--accent); width: 0; transition: width .2s; }
+  .toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 10px 16px; }
+  select, input[type=search], input[type=text], button {
+    font: inherit; color: var(--ink); background: var(--panel); border: 1px solid var(--line);
+    border-radius: 6px; padding: 6px 9px; }
+  button { cursor: pointer; }
+  button:hover { border-color: var(--muted); }
+  button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
+  .count { color: var(--muted); margin-left: auto; }
+  #bulk.armed { background: var(--partial); color: #111; border-color: var(--partial); }
+  .grid { display: grid; gap: 10px; padding: 0 16px 40px;
+          grid-template-columns: repeat(auto-fill, minmax(var(--tile, 220px), 1fr)); }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; overflow: hidden;
+          cursor: pointer; border-top: 5px solid var(--c, var(--line)); }
+  .card:hover { border-color: var(--muted); border-top-color: var(--c, var(--muted)); }
+  .card img { display: block; width: 100%; aspect-ratio: 16/9; object-fit: cover; background: var(--line); }
+  .meta { padding: 6px 8px; display: flex; flex-wrap: wrap; gap: 4px 6px; align-items: center; font-size: 12px; }
+  .meta .n { font-weight: 650; }
+  .meta .d { color: var(--muted); }
+  .chip { border-radius: 4px; padding: 1px 6px; font-size: 11px; font-weight: 600; color: #fff; white-space: nowrap; }
+  .chip.outline { background: transparent !important; color: var(--ink); border: 1px solid var(--line); font-weight: 500; }
+  .chip.open { background: var(--open); } .chip.closed { background: var(--closed); }
+  .chip.partial { background: var(--partial); color: #111; } .chip.exclude { background: var(--exclude); }
+  .card.decided .meta .n::after { content: " ✓"; color: var(--accent); }
+  .empty { padding: 40px 16px; color: var(--muted); text-align: center; }
+
+  #viewer { position: fixed; inset: 0; z-index: 10; background: rgba(0,0,0,.88); display: none;
+            grid-template-columns: 1fr 320px; }
+  #viewer.show { display: grid; }
+  .stage { display: flex; align-items: center; justify-content: center; padding: 16px; min-width: 0; position: relative; }
+  .stage img { max-width: 100%; max-height: calc(100vh - 32px); border-radius: 6px; border: 4px solid var(--c, transparent); }
+  .nav { position: absolute; top: 50%; transform: translateY(-50%); background: rgba(255,255,255,.12);
+         color: #fff; border: 0; font-size: 26px; width: 44px; height: 64px; border-radius: 6px; }
+  .nav.prev { left: 16px; } .nav.next { right: 16px; }
+  .side { background: var(--panel); padding: 16px; overflow-y: auto; display: flex; flex-direction: column; gap: 12px; }
+  .side h2 { margin: 0; font-size: 18px; }
+  .side dl { margin: 0; display: grid; grid-template-columns: auto 1fr; gap: 4px 10px; font-size: 13px; }
+  .side dt { color: var(--muted); } .side dd { margin: 0; word-break: break-word; }
+  .choices { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; }
+  .choices button { padding: 10px; font-weight: 650; border-width: 2px; }
+  .choices button kbd { font: 11px ui-monospace, monospace; opacity: .7; margin-left: 4px; }
+  .choices button.sel { color: #fff; }
+  .choices [data-l=open].sel { background: var(--open); border-color: var(--open); }
+  .choices [data-l=closed].sel { background: var(--closed); border-color: var(--closed); }
+  .choices [data-l=exclude].sel { background: var(--exclude); border-color: var(--exclude); }
+  .side input[type=text] { width: 100%; }
+  .hint { color: var(--muted); font-size: 12px; }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  #toast { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); z-index: 20; background: var(--ink);
+           color: var(--bg); padding: 8px 14px; border-radius: 6px; opacity: 0; transition: opacity .2s; pointer-events: none; }
+  #toast.show { opacity: 1; }
+  @media (max-width: 760px) {
+    #viewer { grid-template-columns: 1fr; grid-template-rows: auto 1fr; }
+    .stage img { max-height: 45vh; }
+    .count { margin-left: 0; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>Revisione foto garage</h1>
+  <div class="stats" id="stats"></div>
+  <div class="progress" title="Foto decise"><div id="bar"></div></div>
+</header>
+
+<div class="toolbar">
+  <select id="view" aria-label="Vista">
+    <option value="check">Da controllare</option>
+    <option value="disagree">Modello ≠ revisione</option>
+    <option value="partial">Aperto poco (da verificare)</option>
+    <option value="noted">Con note revisione</option>
+    <option value="undecided">Non ancora decise</option>
+    <option value="decided">Già decise</option>
+    <option value="all">Tutte</option>
+  </select>
+  <select id="labelFilter" aria-label="Etichetta attuale">
+    <option value="">Ogni etichetta</option>
+    <option value="open">Aperto</option>
+    <option value="closed">Chiuso</option>
+    <option value="exclude">Escluso</option>
+  </select>
+  <select id="kindFilter" aria-label="Tipo messaggio">
+    <option value="">Ogni messaggio</option>
+  </select>
+  <input type="search" id="search" placeholder="N° o testo nota" aria-label="Cerca">
+  <label class="row hint">Dimensione <input type="range" id="size" min="140" max="420" value="220"></label>
+  <button id="bulk" title="Imposta come decisione finale l'etichetta della revisione per le foto visibili non ancora decise">Conferma revisione visibili</button>
+  <span class="count" id="count"></span>
+</div>
+
+<main class="grid" id="grid"></main>
+
+<div id="viewer" role="dialog" aria-modal="true" aria-label="Foto">
+  <div class="stage">
+    <button class="nav prev" id="prev" aria-label="Precedente">‹</button>
+    <img id="big" alt="">
+    <button class="nav next" id="next" aria-label="Successiva">›</button>
+  </div>
+  <aside class="side">
+    <div class="row" style="justify-content: space-between">
+      <h2 id="vTitle"></h2>
+      <button id="close" aria-label="Chiudi">Chiudi ✕</button>
+    </div>
+    <div class="choices" id="choices">
+      <button data-l="open">Aperto<kbd>A</kbd></button>
+      <button data-l="closed">Chiuso<kbd>C</kbd></button>
+      <button data-l="exclude">Escludi<kbd>X</kbd></button>
+    </div>
+    <div class="row">
+      <button id="clear">Annulla decisione <kbd>⌫</kbd></button>
+      <label class="row hint"><input type="checkbox" id="advance" checked> Avanza dopo la scelta</label>
+    </div>
+    <label>Nota<br><input type="text" id="note" placeholder="facoltativa, salvata con Invio"></label>
+    <dl id="info"></dl>
+    <p class="hint">Aperto anche di pochi cm = Aperto. Tasti: A aperto · C chiuso · X escludi · ← → naviga · Invio conferma revisione · Esc chiudi</p>
+  </aside>
+</div>
+<div id="toast"></div>
+
+<script>
+// Binary task: a door open even a few cm counts as open. "partial" only comes
+// from the visual review and is treated as open.
+const LABEL_IT = { open: "Aperto", closed: "Chiuso", partial: "Aperto (poco)", exclude: "Escluso", unclear: "Dubbio" };
+const norm = (l) => (l === "partial" ? "open" : l === "unclear" ? "exclude" : l || "");
+const KIND_IT = {
+  status_open: "Cambio → aperto", status_closed: "Cambio → chiuso", night_open: "Allerta notturna",
+  reminder: "Promemoria", final_warning: "Ultimo avviso", live: "/foto", unknown: "Sconosciuto",
+};
+const FLAG_IT = {
+  short_closed: "chiuso breve", low_confidence: "confidenza bassa",
+  reminder_while_closed: "promemoria da chiuso", unlabeled: "senza etichetta",
+};
+let photos = [], visible = [], current = -1;
+const $ = (id) => document.getElementById(id);
+
+const effective = (p) => p.final_label || norm(p.review_label) || p.label || "";
+const disagree = (p) => p.review_label && p.label && norm(p.review_label) !== p.label;
+const needsCheck = (p) => disagree(p) || p.review_label === "partial" || p.review_label === "unclear"
+  || !p.label || /short_closed|low_confidence|reminder_while_closed/.test(p.flags)
+  || /uncertain|unsure|could be|possibl|maybe|may be|borderline|ambiguous|camera/i.test(p.review_note);
+const chip = (l, prefix, outline) =>
+  l ? `<span class="chip ${outline ? "outline" : l}" title="${prefix}">${prefix} ${LABEL_IT[l] || l}</span>` : "";
+
+function applyFilters() {
+  const view = $("view").value, lf = $("labelFilter").value, kf = $("kindFilter").value;
+  const q = $("search").value.trim().toLowerCase();
+  visible = photos.filter((p) => {
+    if (view === "check" && !needsCheck(p)) return false;
+    if (view === "disagree" && !disagree(p)) return false;
+    if (view === "partial" && p.review_label !== "partial") return false;
+    if (view === "noted" && !p.review_note) return false;
+    if (view === "undecided" && p.final_label) return false;
+    if (view === "decided" && !p.final_label) return false;
+    if (lf && effective(p) !== lf) return false;
+    if (kf && p.kind !== kf) return false;
+    if (q && !(String(p.n) === q || (p.review_note + " " + p.final_note).toLowerCase().includes(q))) return false;
+    return true;
+  });
+  renderGrid();
+}
+
+function cardHTML(p, i) {
+  const eff = effective(p);
+  return `<div class="card ${p.final_label ? "decided" : ""}" data-i="${i}" style="--c: var(--${eff || "line"})">
+    <img loading="lazy" src="/img/${encodeURI(p.file)}" alt="Foto ${p.n}">
+    <div class="meta"><span class="n">#${p.n}</span><span class="d">${p.date.replace("T", " ").slice(0, 16)}</span>
+      ${chip(p.label, "Modello:", true)}${chip(p.review_label, "Rev:", p.review_label === p.label)}
+      ${p.final_label ? chip(p.final_label, "✓") : ""}</div></div>`;
+}
+
+function renderGrid() {
+  const grid = $("grid");
+  grid.innerHTML = visible.length ? visible.map(cardHTML).join("")
+    : `<div class="empty">Nessuna foto con questi filtri.</div>`;
+  $("count").textContent = `${visible.length} foto`;
+  renderStats();
+}
+
+function renderStats() {
+  const decided = photos.filter((p) => p.final_label).length;
+  const counts = {};
+  photos.forEach((p) => { const e = effective(p); counts[e] = (counts[e] || 0) + 1; });
+  $("stats").innerHTML = `<span>Decise <b>${decided}</b> / ${photos.length}</span>` +
+    ["open", "closed", "exclude"].map((l) => `<span>${LABEL_IT[l]} <b>${counts[l] || 0}</b></span>`).join("");
+  $("bar").style.width = `${(100 * decided) / Math.max(photos.length, 1)}%`;
+}
+
+function toast(msg) {
+  const t = $("toast"); t.textContent = msg; t.classList.add("show");
+  clearTimeout(toast.timer); toast.timer = setTimeout(() => t.classList.remove("show"), 1600);
+}
+
+async function save(items) {
+  const res = await fetch("/api/labels", { method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ items }) });
+  if (!res.ok) { toast("Errore nel salvataggio"); throw new Error(await res.text()); }
+}
+
+async function setLabel(p, label) {
+  const prev = p.final_label;
+  p.final_label = label;
+  try { await save([{ file: p.file, final_label: label }]); }
+  catch { p.final_label = prev; }
+  updateCard(p);
+  renderStats();
+}
+
+function updateCard(p) {
+  const i = visible.indexOf(p);
+  const el = document.querySelector(`.card[data-i="${i}"]`);
+  if (el) el.outerHTML = cardHTML(p, i);
+}
+
+function openViewer(i) {
+  if (i < 0 || i >= visible.length) return;
+  current = i;
+  const p = visible[i], eff = effective(p);
+  $("viewer").classList.add("show");
+  $("big").src = `/img/${encodeURI(p.file)}`;
+  $("big").style.setProperty("--c", eff ? `var(--${eff})` : "transparent");
+  $("vTitle").textContent = `#${p.n} · ${i + 1}/${visible.length}`;
+  document.querySelectorAll("#choices button").forEach((b) =>
+    b.classList.toggle("sel", b.dataset.l === p.final_label));
+  $("note").value = p.final_note || "";
+  const flags = p.flags.split(";").filter(Boolean).map((f) => FLAG_IT[f] || f).join(", ");
+  $("info").innerHTML = [
+    ["Data", p.date.replace("T", " ")],
+    ["Messaggio", KIND_IT[p.kind] || p.kind],
+    ["Modello", (LABEL_IT[p.label] || "—") + (p.confidence ? ` (${Math.round(p.confidence * 100)}%)` : "")],
+    ["Revisione", LABEL_IT[p.review_label] || "—"],
+    ["Nota rev.", p.review_note || "—"],
+    ["Segnali", flags || "—"],
+    ["Decisione", p.final_label ? LABEL_IT[p.final_label] : "non ancora"],
+    ["File", p.file],
+  ].map(([k, v]) => `<dt>${k}</dt><dd>${String(v).replace(/</g, "&lt;")}</dd>`).join("");
+  // Preload the next photo for fast keyboard review.
+  if (visible[i + 1]) new Image().src = `/img/${encodeURI(visible[i + 1].file)}`;
+}
+
+function closeViewer() { $("viewer").classList.remove("show"); current = -1; }
+
+async function choose(label) {
+  if (current < 0) return;
+  const p = visible[current];
+  await setLabel(p, label);
+  if (label && $("advance").checked && current < visible.length - 1) openViewer(current + 1);
+  else openViewer(current);
+}
+
+$("grid").addEventListener("click", (e) => {
+  const card = e.target.closest(".card");
+  if (card) openViewer(Number(card.dataset.i));
+});
+$("choices").addEventListener("click", (e) => {
+  const b = e.target.closest("button");
+  if (b) choose(b.dataset.l);
+});
+$("clear").onclick = () => choose("");
+$("close").onclick = closeViewer;
+$("prev").onclick = () => openViewer(current - 1);
+$("next").onclick = () => openViewer(current + 1);
+$("viewer").addEventListener("click", (e) => { if (e.target.classList.contains("stage")) closeViewer(); });
+$("note").addEventListener("keydown", async (e) => {
+  e.stopPropagation();
+  if (e.key === "Enter" && current >= 0) {
+    const p = visible[current];
+    p.final_note = $("note").value;
+    await save([{ file: p.file, final_label: p.final_label || "", final_note: p.final_note }]);
+    toast("Nota salvata");
+    $("note").blur();
+  } else if (e.key === "Escape") $("note").blur();
+});
+
+document.addEventListener("keydown", (e) => {
+  if (current < 0 || e.metaKey || e.ctrlKey || e.altKey) return;
+  const keys = { a: "open", c: "closed", x: "exclude" };
+  const k = e.key.toLowerCase();
+  if (keys[k]) { e.preventDefault(); choose(keys[k]); }
+  else if (e.key === "Backspace" || e.key === "Delete") { e.preventDefault(); choose(""); }
+  else if (e.key === "Enter") {
+    const p = visible[current];
+    const rl = norm(p.review_label);
+    if (rl) { e.preventDefault(); choose(rl); }
+  }
+  else if (e.key === "ArrowRight") openViewer(current + 1);
+  else if (e.key === "ArrowLeft") openViewer(current - 1);
+  else if (e.key === "Escape") closeViewer();
+});
+
+// Two-step bulk confirmation (no browser dialogs).
+$("bulk").onclick = async () => {
+  const b = $("bulk");
+  const targets = visible.filter((p) => !p.final_label && p.review_label);
+  if (!targets.length) return toast("Niente da confermare");
+  if (!b.classList.contains("armed")) {
+    b.classList.add("armed");
+    b.textContent = `Confermi ${targets.length}? Clicca di nuovo`;
+    clearTimeout(b.timer);
+    b.timer = setTimeout(() => { b.classList.remove("armed"); b.textContent = "Conferma revisione visibili"; }, 4000);
+    return;
+  }
+  b.classList.remove("armed"); b.textContent = "Conferma revisione visibili";
+  const items = targets.map((p) => ({ file: p.file, final_label: norm(p.review_label) }));
+  await save(items);
+  items.forEach((it, i) => { targets[i].final_label = it.final_label; });
+  toast(`${items.length} foto confermate`);
+  applyFilters();
+};
+
+["view", "labelFilter", "kindFilter"].forEach((id) => $(id).addEventListener("change", applyFilters));
+$("search").addEventListener("input", applyFilters);
+$("size").addEventListener("input", (e) => document.documentElement.style.setProperty("--tile", e.target.value + "px"));
+
+fetch("/api/photos").then((r) => r.json()).then((data) => {
+  photos = data.sort((a, b) => a.n - b.n);
+  const kinds = [...new Set(photos.map((p) => p.kind))];
+  $("kindFilter").innerHTML += kinds.map((k) => `<option value="${k}">${KIND_IT[k] || k}</option>`).join("");
+  applyFilters();
+});
+</script>
+</body>
+</html>
