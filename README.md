@@ -10,7 +10,7 @@ The system is built around a single Google Cloud Function that executes the foll
 2. **Capture snapshot** — Authenticates with the Blink API using stored credentials (no 2FA required after initial setup) and commands the camera to take a fresh JPEG snapshot.
 3. **AI analysis** — The JPEG snapshot is sent to the configured analyzer backend (`GM_ANALYZER`):
    - **Gemini** (default): the image is sent to the Gemini cloud API with a detailed Italian prompt describing the camera's perspective. Gemini returns a structured JSON with `status` (open/closed), `confidence` (0.0–1.0), and `reasoning` (Italian text). Temperature is set to 0.0 for deterministic output. Cost: ~$0.30/M input tokens + $2.50/M output tokens.
-   - **TFLite** (alternative): a pre-trained MobileNetV2 binary classifier (`model/garage_classifier.tflite`, 4.4 MB) runs locally on the Cloud Function CPU. The image is resized to 224×224, normalized to [0, 1], and fed through the model. The output is a single float (0=closed, 1=open) mapped to the same `GeminiAnalysisResult` format. Inference takes ~50–100 ms with zero API cost. See [TFLite Model](docs/TFLITE_MODEL.md) for full architecture and training details.
+   - **TFLite** (alternative): a pre-trained MobileNetV2 binary classifier (`model/garage_classifier.tflite`, 4.4 MB) runs locally on the Cloud Function CPU. The image is resized to 224×224, normalized to [0, 1], and fed through the model. The output is a single float (0=closed, 1=open) mapped to the same `GeminiAnalysisResult` format. Inference takes ~50–100 ms with zero API cost. The model is trained on the photos the bot itself sent on Telegram, reviewed by hand (October 2026: 2101 photos, 99.5% accuracy on the latest two months). See [TFLite Model](docs/TFLITE_MODEL.md) for full architecture, training and retraining details.
 4. **State change detection** — If the AI classification differs from the stored state *and* the confidence exceeds the configured threshold (default 0.7), the system records a state change.
 5. **Telegram notification** — On state change, sends a Telegram message with the snapshot photo, the old and new status, confidence score, and the analyzer's reasoning. On first run, sends a "monitor started" confirmation.
 6. **Open-door reminders** — If the door has been open for more than 15 minutes, sends a reminder with photo every 15 minutes, up to a maximum of 60 minutes.
@@ -358,7 +358,9 @@ scripts/
     setup_blink.py            — Interactive Blink 2FA authentication, saves credentials to Firestore
     test_telegram.py          — Verify Telegram bot token and chat ID
     setup_telegram_webhook.py — Register/delete Telegram webhook for bot commands
-    train_model.py            — TFLite model training pipeline (MobileNetV2 transfer learning)
+    import_telegram_export.py — Build the training dataset from a Telegram Desktop chat export
+    review_dataset.py         — Local review page to set final labels (with review_ui.html)
+    train_model.py            — TFLite model evaluation/training pipeline (MobileNetV2 transfer learning)
     compare_models.py         — Compare multiple Gemini models on test images
     test_heuristic.py         — Heuristic-based garage door detection test
 
@@ -367,6 +369,8 @@ tests/
     test_telegram_handler.py  — Tests for webhook routing and bot commands
     test_gemini_analyzer.py   — Tests for Gemini response parsing
     test_firestore_store.py   — Tests for Firestore persistence
+    test_telegram_notifier.py — Tests for Telegram message delivery
+    test_import_telegram_export.py — Tests for the Telegram export importer
 
 docs/
     SETUP_BOT.md       — Post-deploy guide for Telegram bot setup and troubleshooting
@@ -388,7 +392,7 @@ pyproject.toml         — Python project config (dependencies, pytest settings)
 | No notifications at all | Bot token or chat ID incorrect | Run `python scripts/test_telegram.py` to verify |
 | Confidence always below threshold | Poor lighting or camera angle | Ensure the camera is inside the garage, centered on the door. Check IR mode at night |
 | Cloud Function timeout | Blink API slow to respond | The function has a 120s timeout. If persistent, check Blink service status |
-| TFLite model misclassifies | Camera moved or new lighting condition | Retrain the model — see [TFLite Model](docs/TFLITE_MODEL.md) retraining instructions |
+| TFLite model misclassifies | Camera moved or new lighting condition | Retrain from the Telegram photos (export chat → import → review → `--evaluate` → `--train`) — see [TFLite Model](docs/TFLITE_MODEL.md#retraining-the-model) |
 | Bot commands not working | Webhook not registered or secret mismatch | Run `setup_telegram_webhook.py` with correct `GM_TELEGRAM_WEBHOOK_SECRET` |
 | `/storico` returns error | Missing Firestore composite index | Create the index — see Step 9 above |
 | Night false positives | IR image misclassified as "open" | Gemini prompt is tuned for this camera; adjust confidence threshold if needed |

@@ -198,7 +198,6 @@ Trained on all periods, holding out 10% of random whole days for early stopping 
 
 ### 1. Collect and label photos
 
-
 Every photo the bot sent is a labeled sample. The Bot API cannot read chat history, so export it from **Telegram Desktop**: bot chat → ⋮ → *Export chat history* → only *Photos* (JSON or HTML format). Then:
 
 ```bash
@@ -217,7 +216,7 @@ Captions record what the model decided, not ground truth. `data/telegram/manifes
 | `reminder_while_closed` | "Still open" reminder sent after a change to closed |
 | `unlabeled` | `/foto` snapshot or unrecognized caption: needs a label |
 
-Fill `review_label` / `review_note` during review. `data/` is git-ignored (private photos).
+`review_label` / `review_note` hold an optional first pass (in October 2026, a blind visual classification of every photo by Claude, which found 31 open/closed swaps); `final_label` is the human decision and the only label training uses. `data/` is git-ignored (private photos).
 
 To decide the final labels, run the local review page (127.0.0.1 only, photos never leave the machine):
 
@@ -275,7 +274,7 @@ Example: if the TFLite model outputs 0.55 (meaning "open" with only 55% confiden
 ```
 model/
   garage_classifier.tflite    # 4.4 MB — deployed with the Cloud Function
-  garage_classifier.keras     # ~20 MB — Keras checkpoint for retraining (not deployed)
+  garage_classifier.keras     # ~10 MB — Keras checkpoint (not deployed)
 data/telegram/                # Reviewed dataset (not committed to git: private photos)
   open/ closed/ unlabeled/    # Photos imported from the Telegram export
   manifest.csv                # Labels, flags, review and final decisions
