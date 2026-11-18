@@ -7,7 +7,7 @@ from zoneinfo import ZoneInfo
 
 import functions_framework
 
-from garage_monitor.blink_client import BlinkAuthExpiredError, BlinkClient
+from garage_monitor.blink_client import BlinkAuthExpiredError, BlinkClient, StalePhotoError
 from garage_monitor.config import Settings
 from garage_monitor.firestore_store import FirestoreStore
 from garage_monitor.gemini_analyzer import GeminiAnalyzer, GeminiParseError
@@ -273,9 +273,7 @@ def _handle_status_request(request, settings: Settings):
     if not settings.status_token:
         return "STATUS_DISABLED", 403
 
-    auth = request.headers.get("Authorization", "")
-    token = auth[len("Bearer "):] if auth.startswith("Bearer ") else ""
-    if not hmac.compare_digest(token.encode(), settings.status_token.encode()):
+    if not _bearer_ok(request, settings.status_token):
         return "INVALID_TOKEN", 403
 
     store = FirestoreStore(settings.gcp_project_id, settings.firestore_collection)
@@ -313,9 +311,12 @@ async def _take_photo(settings: Settings):
         if not credentials:
             return "NO_CREDENTIALS", 503
         await blink.connect(credentials)
-        snapshot = await blink.take_snapshot(settings.blink_camera_name)
+        snapshot, ts = await blink.take_fresh_snapshot(settings.blink_camera_name)
         store.save_blink_credentials(blink.get_updated_credentials())
-        return snapshot, 200, {"Content-Type": "image/jpeg", "Cache-Control": "no-store"}
+        return snapshot, 200, {"Content-Type": "image/jpeg", "Cache-Control": "no-store", "X-Photo-Ts": str(ts)}
+    except StalePhotoError as e:
+        logger.warning("?action=photo: %s", e)
+        return "PHOTO_STALE", 502
     except Exception as e:
         logger.exception("Error taking photo for ?action=photo: %s", e)
         return "PHOTO_ERROR", 502
