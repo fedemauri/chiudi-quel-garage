@@ -19,3 +19,4 @@ class Settings(BaseSettings):
     telegram_webhook_secret: str = ""
     scheduler_token: str = ""  # X-Scheduler-Token required for checks/report; empty = open (legacy)
     status_token: str = ""  # read-only ?action=status for Home Assistant; empty = disabled
+    photo_token: str = ""  # ?action=photo, a fresh snapshot as JPEG (pareti-parlanti iPad); empty = disabled

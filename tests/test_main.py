@@ -37,6 +37,7 @@ def _make_settings(**overrides):
         "telegram_webhook_secret": "test-secret",
         "status_token": "",
         "scheduler_token": "",
+        "photo_token": "",
     }
     defaults.update(overrides)
     settings = MagicMock()
@@ -1063,3 +1064,109 @@ def test_settings_without_blink_password(monkeypatch):
     assert settings.blink_password == ""
     assert settings.scheduler_token == ""
 
+
+
+class TestPhotoEndpoint:
+    """GET ?action=photo: a fresh snapshot as JPEG, like the /foto bot command (pareti-parlanti iPad)."""
+
+    def _request(self, auth=None):
+        request = MagicMock()
+        request.content_type = None
+        request.args = {"action": "photo"}
+        request.headers = {"Authorization": auth} if auth is not None else {}
+        return request
+
+    def _blink(self, mock_blink_cls, snapshot=b"\xff\xd8jpg", error=None):
+        blink = MagicMock()
+        blink.connect = AsyncMock()
+        blink.take_fresh_snapshot = AsyncMock(return_value=(snapshot, 1795007076), side_effect=error)
+        blink.get_updated_credentials.return_value = {"token": "new"}
+        blink.close = AsyncMock()
+        mock_blink_cls.return_value = blink
+        return blink
+
+    @patch("garage_monitor.main.Settings")
+    @patch("garage_monitor.main.BlinkClient")
+    @patch("garage_monitor.main.FirestoreStore")
+    def test_disabled_without_token(self, mock_store_cls, mock_blink_cls, mock_settings_cls):
+        mock_settings_cls.return_value = _make_settings(photo_token="")
+        assert check_garage(self._request("Bearer anything")) == ("PHOTO_DISABLED", 403)
+        mock_blink_cls.assert_not_called()
+        mock_store_cls.assert_not_called()
+
+    @patch("garage_monitor.main.Settings")
+    @patch("garage_monitor.main.BlinkClient")
+    @patch("garage_monitor.main.FirestoreStore")
+    @pytest.mark.parametrize("auth", [None, "", "Bearer wrong", "ph-123", "Basic ph-123", "Bearer tok-123"])
+    def test_rejects_wrong_token(self, mock_store_cls, mock_blink_cls, mock_settings_cls, auth):
+        mock_settings_cls.return_value = _make_settings(photo_token="ph-123", status_token="tok-123")
+        assert check_garage(self._request(auth)) == ("INVALID_TOKEN", 403)
+        mock_blink_cls.assert_not_called()
+        mock_store_cls.assert_not_called()
+
+    @patch("garage_monitor.main.Settings")
+    @patch("garage_monitor.main.BlinkClient")
+    @patch("garage_monitor.main.GeminiAnalyzer")
+    @patch("garage_monitor.main.TelegramNotifier")
+    @patch("garage_monitor.main.FirestoreStore")
+    def test_returns_fresh_snapshot(self, mock_store_cls, mock_tg_cls, mock_gem_cls, mock_blink_cls, mock_settings_cls):
+        mock_settings_cls.return_value = _make_settings(photo_token="ph-123", scheduler_token="sched")
+        store = MagicMock()
+        store.get_blink_credentials.return_value = {"token": "old"}
+        mock_store_cls.return_value = store
+        blink = self._blink(mock_blink_cls)
+
+        result = check_garage(self._request("Bearer ph-123"))
+
+        assert result == (b"\xff\xd8jpg", 200, {"Content-Type": "image/jpeg", "Cache-Control": "no-store",
+                                                 "X-Photo-Ts": "1795007076"})
+        blink.connect.assert_awaited_once_with({"token": "old"})
+        blink.take_fresh_snapshot.assert_awaited_once_with("Garage")
+        store.save_blink_credentials.assert_called_once_with({"token": "new"})
+        blink.close.assert_awaited_once()
+        # only the snapshot: no analysis, no Telegram, no state written
+        mock_gem_cls.assert_not_called()
+        mock_tg_cls.assert_not_called()
+        store.save_state.assert_not_called()
+        store.save_event.assert_not_called()
+        store.increment_usage.assert_not_called()
+
+    @patch("garage_monitor.main.Settings")
+    @patch("garage_monitor.main.BlinkClient")
+    @patch("garage_monitor.main.FirestoreStore")
+    def test_no_credentials(self, mock_store_cls, mock_blink_cls, mock_settings_cls):
+        mock_settings_cls.return_value = _make_settings(photo_token="ph-123")
+        store = MagicMock()
+        store.get_blink_credentials.return_value = None
+        mock_store_cls.return_value = store
+        blink = self._blink(mock_blink_cls)
+        assert check_garage(self._request("Bearer ph-123")) == ("NO_CREDENTIALS", 503)
+        blink.take_fresh_snapshot.assert_not_awaited()
+
+    @patch("garage_monitor.main.Settings")
+    @patch("garage_monitor.main.BlinkClient")
+    @patch("garage_monitor.main.FirestoreStore")
+    def test_blink_error(self, mock_store_cls, mock_blink_cls, mock_settings_cls):
+        mock_settings_cls.return_value = _make_settings(photo_token="ph-123")
+        store = MagicMock()
+        store.get_blink_credentials.return_value = {"token": "old"}
+        mock_store_cls.return_value = store
+        blink = self._blink(mock_blink_cls, error=RuntimeError("secret detail"))
+        assert check_garage(self._request("Bearer ph-123")) == ("PHOTO_ERROR", 502)
+        blink.close.assert_awaited_once()
+        store.save_blink_credentials.assert_not_called()
+
+    @patch("garage_monitor.main.Settings")
+    @patch("garage_monitor.main.BlinkClient")
+    @patch("garage_monitor.main.FirestoreStore")
+    def test_stale_photo(self, mock_store_cls, mock_blink_cls, mock_settings_cls):
+        """Blink still shows the previous thumbnail: no old photo passed off as new."""
+        from garage_monitor.blink_client import StalePhotoError
+
+        mock_settings_cls.return_value = _make_settings(photo_token="ph-123")
+        store = MagicMock()
+        store.get_blink_credentials.return_value = {"token": "old"}
+        mock_store_cls.return_value = store
+        blink = self._blink(mock_blink_cls, error=StalePhotoError("thumbnail unchanged"))
+        assert check_garage(self._request("Bearer ph-123")) == ("PHOTO_STALE", 502)
+        blink.close.assert_awaited_once()

@@ -8,12 +8,29 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 
 from aiohttp import ClientSession
 from blinkpy.auth import Auth
 from blinkpy.blinkpy import Blink
 
 logger = logging.getLogger(__name__)
+
+
+FRESH_ATTEMPTS = 3  # refreshes after a snap before giving up (3 s apart)
+_TS = re.compile(r"[?&]ts=(\d+)")
+
+
+def thumbnail_ts(url: str | None) -> int | None:
+    """The `ts=` of a Blink thumbnail URL (epoch seconds), or None."""
+    m = _TS.search(url or "")
+    return int(m.group(1)) if m else None
+
+
+class StalePhotoError(Exception):
+    """Raised when Blink still shows the previous thumbnail after a snap."""
+
+    pass
 
 
 class BlinkAuthExpiredError(Exception):
@@ -110,6 +127,37 @@ class BlinkClient:
             len(image_bytes),
         )
         return image_bytes
+
+    async def take_fresh_snapshot(self, camera_name: str) -> tuple[bytes, int]:
+        """Take a snapshot and return (JPEG bytes, Blink thumbnail ts), only if the photo is really new.
+
+        Like take_snapshot, but the thumbnail ts must change after the snap: Blink may not have
+        registered the new picture yet and would return the previous one (up to 5 minutes old).
+        Refreshes up to FRESH_ATTEMPTS times, 3 s apart.
+
+        Raises:
+            RuntimeError: If connect() has not been called.
+            ValueError: If camera_name is not found.
+            StalePhotoError: If the thumbnail never changes.
+        """
+        if not self._blink:
+            raise RuntimeError("Not connected. Call connect() first.")
+        camera = self._blink.cameras.get(camera_name)
+        if not camera:
+            raise ValueError(f"Camera '{camera_name}' not found. Available: {list(self._blink.cameras.keys())}")
+
+        before = thumbnail_ts(camera.thumbnail)
+        logger.info("Requesting fresh snapshot from camera '%s' (thumbnail ts before: %s)...", camera_name, before)
+        await camera.snap_picture()
+        for _ in range(FRESH_ATTEMPTS):
+            await asyncio.sleep(3)
+            await self._blink.refresh(force=True)
+            after = thumbnail_ts(camera.thumbnail)
+            image_bytes = camera.image_from_cache
+            if after is not None and after != before and image_bytes:
+                logger.info("Fresh snapshot from '%s' (ts %s, %d bytes).", camera_name, after, len(image_bytes))
+                return image_bytes, after
+        raise StalePhotoError(f"Thumbnail of '{camera_name}' unchanged after {FRESH_ATTEMPTS} refreshes")
 
     def get_updated_credentials(self) -> dict:
         """Return refreshed credentials to save back to Firestore.
