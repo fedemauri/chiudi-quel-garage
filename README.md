@@ -178,6 +178,7 @@ Edit `.env` and fill in all values. Every variable uses the `GM_` prefix:
 | `GM_TELEGRAM_WEBHOOK_SECRET` | no | `""` | Secret token for Telegram webhook validation. Required to enable interactive bot commands. Generate with `openssl rand -hex 32` |
 | `GM_GEMINI_COST_ALERT_THRESHOLD` | no | `3.0` | Monthly projected Gemini cost threshold ($) — triggers a warning in the `/report` output if exceeded |
 | `GM_STATUS_TOKEN` | no | `""` | Bearer token for the read-only `GET ?action=status` endpoint used by Home Assistant. Reads only the Firestore state (no Blink, no AI, no Telegram). Empty = disabled. Generate with `openssl rand -hex 32` |
+| `GM_PHOTO_TOKEN` | no | `""` | Bearer token for `GET ?action=photo`: a fresh snapshot returned as JPEG, like `/foto` (used by the pareti-parlanti kitchen iPad). No AI, no Telegram, no state written. Empty = disabled. Generate with `openssl rand -hex 32` |
 | `GM_SCHEDULER_TOKEN` | recommended | `""` | Secret header `X-Scheduler-Token` sent by Cloud Scheduler. When set, checks and `?action=report` without it get 403 (no Blink snapshot). Empty = open (legacy). Generate with `openssl rand -hex 32` |
 
 ### Step 5 — Blink Authentication (one-time, interactive)
@@ -262,8 +263,9 @@ gcloud firestore fields ttls update expire_at --collection-group=garage_monitor 
 | Normal check (no `action`) and `?action=report` | Cloud Scheduler only | header `X-Scheduler-Token` = `GM_SCHEDULER_TOKEN` (set by `deploy.sh` on the job). Without it: **403**, no Blink snapshot |
 | Telegram webhook | Telegram | header `X-Telegram-Bot-Api-Secret-Token` + chat id check |
 | `GET ?action=status` | Home Assistant | `Authorization: Bearer GM_STATUS_TOKEN` |
+| `GET ?action=photo` | pareti-parlanti (iPad in kitchen) | `Authorization: Bearer GM_PHOTO_TOKEN` |
 
-`GM_BLINK_PASSWORD` is not sent to the function any more (only `scripts/setup_blink.py` uses it). Tokens live in 1Password (*Private*: "garage scheduler token", "garage status token"); the `.env` reads them with `op read` at deploy time.
+`GM_BLINK_PASSWORD` is not sent to the function any more (only `scripts/setup_blink.py` uses it). Tokens live in 1Password (*Private*: "garage scheduler token", "garage status token", "garage photo token"); the `.env` reads them with `op read` at deploy time.
 
 **Status endpoint.** Read-only: it reads the Firestore `state` document and returns JSON — no Blink snapshot, no analyzer, no Telegram, no writes:
 
@@ -273,6 +275,12 @@ curl -H "Authorization: Bearer $GM_STATUS_TOKEN" "$FUNCTION_URL?action=status"
 ```
 
 `stale` is true when the last check is older than 12 minutes.
+
+**Photo endpoint (since 18/11/2026).** `GET ?action=photo` takes a fresh snapshot exactly like the `/foto` bot command (snap, wait 3 s, forced Blink refresh) and returns it as `image/jpeg` instead of sending it to Telegram. No analyzer, no Telegram, no state written (only the refreshed Blink credentials are saved). Errors: 403 (`PHOTO_DISABLED` / `INVALID_TOKEN`), 503 `NO_CREDENTIALS`, 502 `PHOTO_ERROR`. The kitchen iPad of pareti-parlanti calls it when someone taps "refresh" on the garage photo (at most once every 30 s, enforced there): Home Assistant cannot fetch a fresh Blink photo on demand (its Blink integration refreshes at most every 5 minutes).
+
+```bash
+curl -H "Authorization: Bearer $GM_PHOTO_TOKEN" "$FUNCTION_URL?action=photo" -o garage.jpg
+```
 
 **Home Assistant** (homelab, LAN/Tailscale only) polls it every minute with a RESTful sensor (token in `secrets.yaml`): `binary_sensor.garage` (garage door), `binary_sensor.garage_monitor_fermo` (stale or 3 errors), last check/change timestamps. HA automations add an in-app alert while the door is open, an Echo announcement after 15 and 30 minutes, and a phone notification if this monitor stops. Telegram reminders and night alerts stay here. HA also has its own Blink login (a separate client on the same account): it never triggers snapshots of the garage camera.
 

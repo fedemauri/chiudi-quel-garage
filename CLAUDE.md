@@ -67,6 +67,7 @@ deploy.sh              # Full deploy: Cloud Function + Scheduler jobs
 | `GM_TELEGRAM_WEBHOOK_SECRET` | no | `""` | Secret for Telegram webhook validation (required for bot commands) |
 | `GM_GEMINI_COST_ALERT_THRESHOLD` | no | `3.0` | Monthly Gemini cost alert threshold ($) |
 | `GM_STATUS_TOKEN` | no | `""` | Bearer token for the read-only `?action=status` endpoint (Home Assistant). Empty = endpoint disabled |
+| `GM_PHOTO_TOKEN` | no | `""` | Bearer token for `?action=photo`: a fresh snapshot as JPEG, like `/foto` (pareti-parlanti iPad). Empty = endpoint disabled |
 | `GM_SCHEDULER_TOKEN` | recommended | `""` | Secret header `X-Scheduler-Token` sent by Cloud Scheduler. When set, checks and `?action=report` without it get 403 (no Blink snapshot). Empty = open (legacy). Generate with `openssl rand -hex 32` |
 
 ## Development Commands

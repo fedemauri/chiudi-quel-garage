@@ -298,6 +298,44 @@ def _handle_status_request(request, settings: Settings):
     return json.dumps(body), 200, {"Content-Type": "application/json", "Cache-Control": "no-store"}
 
 
+def _bearer_ok(request, expected: str) -> bool:
+    auth = request.headers.get("Authorization", "")
+    token = auth[len("Bearer "):] if auth.startswith("Bearer ") else ""
+    return hmac.compare_digest(token.encode(), expected.encode())
+
+
+async def _take_photo(settings: Settings):
+    """Fresh snapshot, like the /foto bot command, without sending it to Telegram."""
+    store = FirestoreStore(settings.gcp_project_id, settings.firestore_collection)
+    blink = BlinkClient()
+    try:
+        credentials = store.get_blink_credentials()
+        if not credentials:
+            return "NO_CREDENTIALS", 503
+        await blink.connect(credentials)
+        snapshot = await blink.take_snapshot(settings.blink_camera_name)
+        store.save_blink_credentials(blink.get_updated_credentials())
+        return snapshot, 200, {"Content-Type": "image/jpeg", "Cache-Control": "no-store"}
+    except Exception as e:
+        logger.exception("Error taking photo for ?action=photo: %s", e)
+        return "PHOTO_ERROR", 502
+    finally:
+        await blink.close()
+
+
+def _handle_photo_request(request, settings: Settings):
+    """A fresh snapshot as JPEG for the pareti-parlanti iPad (GM_PHOTO_TOKEN, Bearer header).
+
+    Takes a Blink snapshot exactly like /foto: no analysis, no Telegram, no state written
+    (only the refreshed Blink credentials are saved).
+    """
+    if not settings.photo_token:
+        return "PHOTO_DISABLED", 403
+    if not _bearer_ok(request, settings.photo_token):
+        return "INVALID_TOKEN", 403
+    return asyncio.run(_take_photo(settings))
+
+
 def _scheduler_authorized(request, settings: Settings) -> bool:
     """Checks and reports may only be triggered by Cloud Scheduler (X-Scheduler-Token).
 
@@ -345,6 +383,8 @@ def check_garage(request):
     action = request.args.get("action")
     if action == "status":
         return _handle_status_request(request, settings)
+    if action == "photo":
+        return _handle_photo_request(request, settings)
     if not _scheduler_authorized(request, settings):
         return "UNAUTHORIZED", 403
     if action == "report":
